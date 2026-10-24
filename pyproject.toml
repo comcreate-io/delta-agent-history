@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "t3-delta-recorder"
+version = "0.1.0"
+description = "Private, prospective T3 Code conversation recording and project recall through Delta"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "ComCreate"}]
+dependencies = []
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Version Control",
+]
+
+[project.urls]
+Repository = "https://github.com/comcreate-io/t3-delta-recorder"
+Issues = "https://github.com/comcreate-io/t3-delta-recorder/issues"
+
+[project.scripts]
+t3-delta = "t3_delta.cli:main"
+t3-delta-service = "t3_delta.services:main"
+
+[tool.setuptools]
+packages = ["t3_delta"]
+
+[tool.setuptools.data-files]
+"share/t3-delta-recorder/skills/t3-delta-history" = ["skills/t3-delta-history/SKILL.md"]
+"share/t3-delta-recorder/instructions" = ["instructions/project-recall.md"]

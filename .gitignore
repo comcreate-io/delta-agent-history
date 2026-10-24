@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.coverage
+.DS_Store
+result
+result-*
+.env
+.env.*
+token.json
+config.json
+*.sqlite3
+*.sqlite3-*
+*.log

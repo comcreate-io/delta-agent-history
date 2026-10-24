@@ -1,0 +1,17 @@
+{
+  "environment_id": "YOUR_T3_ENVIRONMENT_ID",
+  "t3_runtime_file": "/absolute/path/to/.t3/userdata/server-runtime.json",
+  "t3_binary": "/absolute/path/to/t3",
+  "delta_binary": "/absolute/path/to/zed-delta",
+  "poll_seconds": 10,
+  "projects_root": "/absolute/path/to/projects",
+  "additional_project_paths": [],
+  "allowed_remotes": ["https://github.com/example/project.git"],
+  "allowed_projects": [
+    {
+      "path": "/absolute/path/to/projects/project",
+      "remote": "https://github.com/example/project.git",
+      "enrolled_after": "2026-01-01T00:00:00+00:00"
+    }
+  ]
+}
