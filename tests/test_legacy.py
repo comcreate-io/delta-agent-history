@@ -1,7 +1,10 @@
 import json
+import contextlib
+import io
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -70,3 +73,21 @@ class LegacyRecallTests(unittest.TestCase):
         self.path.unlink()
         with self.assertRaises(ValueError):
             legacy.sessions(self.config, self.repo)
+
+    def test_explicit_symlinked_configuration_links_its_readonly_target(self):
+        from delta_history.cli import main
+        from delta_history.configuration import load
+        alias = self.root / "declarative-config.json"
+        alias.symlink_to(self.path)
+        target = self.root / "generic.json"
+        before = {name: (self.state / name).read_bytes() for name in ("source.sqlite3", "sink.sqlite3")}
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(['--config', str(target), 'init', '--project', str(self.repo),
+                         '--source', 'generic:local', '--delta-binary', sys.executable,
+                         '--legacy-t3-config', str(alias), '--legacy-t3-state', str(self.state),
+                         '--accept-upload'])
+        self.assertEqual(code, 0)
+        config = load(target)
+        self.assertEqual(config['legacy_t3']['config'], str(self.path))
+        self.assertEqual(len(legacy.sessions(config, self.repo)), 1)
+        self.assertEqual(before, {name: (self.state / name).read_bytes() for name in before})

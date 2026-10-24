@@ -164,7 +164,7 @@ def main(argv=None):
             if bool(args.legacy_t3_config) != bool(args.legacy_t3_state):
                 raise ValueError("Legacy T3 config and state must be supplied together")
             legacy = None if not args.legacy_t3_config else {
-                "config": str(args.legacy_t3_config.expanduser().absolute()),
+                "config": str(args.legacy_t3_config.expanduser().resolve(strict=True)),
                 "state": str(args.legacy_t3_state.expanduser().absolute()),
             }
             value = configuration.initialize(args.config.expanduser(), projects=args.project, sources=args.source,

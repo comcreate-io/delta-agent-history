@@ -33,6 +33,10 @@ delta-history init \
 ```
 
 Both paths must be explicitly supplied. Nothing is automatically discovered.
+An explicitly selected symlinked config, such as a Home Manager file, is resolved
+to its regular target at setup. That target is pinned in the neutral config;
+relink deliberately if a declarative update replaces it or garbage collection
+removes it. State directories must remain canonical and separate.
 Shared `sessions --project PATH` includes eligible legacy bindings with
 `legacy-t3:` keys; shared history and MCP route those reads to the original
 binding. The selected repository must be allowed by both configs and its current
@@ -50,6 +54,14 @@ service definitions must not mutate the same writer state. Rename or relocate a
 virtual environment only after stopping its services and regenerating their paths.
 The public project/package is now `delta-agent-history`; the compatibility
 commands are shipped in the new package, not a separate shim installation.
+Use a fresh virtual environment for version 0.2 rather than installing the old
+and new distribution names together: both ship the compatibility modules and
+commands. For example, run `python3 -m venv .venv-0.2`, then
+`.venv-0.2/bin/python -m pip install .`. Leave state outside that environment.
+For declarative installations, replace the old package declaration with the new
+one while retaining original config/state; do not add both conflicting packages
+to the same profile. Change service executable paths deliberately after stopping
+the affected worker, then verify its original bindings and pending queue.
 
 Back up a stopped worker's entire state before a deliberate future migration.
 Do not copy it into generic state. Rollback means returning to the compatible
