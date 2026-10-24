@@ -99,7 +99,7 @@ class EngineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        root = Path(self.temp.name)
+        root = Path(self.temp.name).resolve()
         self.repo = root / "repo"
         self.repo.mkdir()
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)

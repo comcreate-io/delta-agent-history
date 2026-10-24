@@ -36,6 +36,15 @@ class SetupTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(path), "remote", "add", "origin", origin], check=True)
         return path
 
+    def test_symlinked_repository_input_records_the_canonical_checkout(self):
+        alias = self.root / "project-alias"
+        alias.symlink_to(self.project, target_is_directory=True)
+        initialize(self.target, **{**self.kwargs, "projects": [alias]})
+        config = json.loads(self.target.read_text())
+        self.assertEqual(config["allowed_projects"][0]["path"], str(self.project.resolve()))
+        engine = Engine(config, self.root / "state", None, None)
+        engine.close()
+
     def test_offline_explicit_config_is_engine_compatible_private_and_prospective(self):
         other = self.repository("other/another", "git@github.com:example/another.git")
         with patch("t3_delta.setup.utc_now", return_value="2026-01-01T00:00:00+00:00"):

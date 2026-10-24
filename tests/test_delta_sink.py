@@ -87,7 +87,7 @@ class FakeDelta:
 class DeltaSinkTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.checkout = self.root / "checkout"
         self.checkout.mkdir()
         self.fake = FakeDelta(self.checkout)
