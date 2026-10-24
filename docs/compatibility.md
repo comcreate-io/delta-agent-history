@@ -1,41 +1,65 @@
-# Compatibility and verification
+# Compatibility and evidence
 
-This experimental bridge uses version-sensitive public interfaces. Python portability and live desktop integration are different claims.
+This is an experimental 0.2 release. Harness independence is a protocol boundary,
+not a promise that every application provides complete automatic capture.
 
-## Supported baseline
+| Component | Support boundary |
+|---|---|
+| Python | 3.11+, standard-library runtime and POSIX locking. |
+| Linux/macOS | Package, unit, service serialization and installed-command CI. |
+| Delta | Tested baseline 0.21.0, public recording contracts 6–7 only. |
+| Generic producer | Strict ingress v1; live Linux private upload and separate-client MCP readback. |
+| Claude Code | Fixture-tested documented hooks, prompts and final Stop text; prompt IDs required. |
+| Codex | Fixture-tested wrapper for noninteractive `exec --json`; not general desktop/interactive capture. |
+| OpenCode | Fixture-tested SDK/plugin snapshots of complete visible messages. |
+| Optional T3 | Original 0.1.0 read-only MCP adapter, live Linux evidence, unchanged legacy identities. |
+| MCP clients | Read-only stdio tools, bound to one enrolled repository. |
+| Closed desktop apps | No complete automatic capture claimed without a verified official feed. |
+| Windows | Unsupported POSIX locking/service implementation. |
 
-| Component | Baseline | Boundary |
-|---|---|---|
-| Python | 3.11+ | Standard-library runtime, POSIX locking and private permissions. |
-| Git | Installed CLI | Checkout identity and linked-worktree common-directory checks. |
-| T3 Code | 0.1.0 | Supported read-only MCP and CLI session issuance. |
-| Zed Delta | 0.21.0 | Recording contracts 6–7. Reject newer maximum until reviewed. |
-| Linux | Live recording exercised | Generic Python packaging and per-user systemd tooling. |
-| macOS | Portable implementation and CI target | Per-user launchd tooling; no live Mac desktop integration proof yet. |
-| Windows | Unsupported | POSIX-only locking and service tooling. |
+Upstream [Delta requirements](https://delta.dev/docs/installation) currently include
+glibc Linux x86_64/aarch64 or macOS 13+ Apple Silicon. The bridge does not license,
+install or grant access to upstream applications. Portable Python does not add
+Intel Mac support to the Delta app.
 
-The bridge does not install or license T3 or Delta, grant account access, or make either available on unsupported hardware. [Delta's installation guide](https://delta.dev/docs/installation) currently requires macOS 13+ on Apple Silicon, or a glibc Linux system on x86_64/aarch64. In particular, portable Python code does not establish Intel Mac support for the upstream app. Check upstream requirements before setup. Nix packages this bridge; upstream apps remain separate prerequisites.
+## What is tested
 
-Do not silently widen accepted recording versions or transplant a newer producer's wire format. Upstream can change fields, errors, or receipt semantics. Protocol updates need synthetic tests, live exact-version verification, and a compatibility update.
+A disposable public checkout and synthetic generic producer were recorded with
+private visibility and completed upload on Linux, then read through a separate
+stdio MCP process. Local duplicate submissions were verified without extra
+messages. No T3 credential was required. Delta adds paragraph separators to its
+public transcript projection; readback compared visible text and roles.
 
-## Evidence and limitations
+The original T3 Linux integration exercised private creation, checkout attachment,
+server acknowledgement, upload, bounded readback, immutable replay and controlled
+latest-state recovery. New integrations use synthetic hooks/events, a fake Codex
+executable, OpenCode SDK stubs, real local stdio MCP conversations, and temporary
+Git checkouts. No CI credentials, production sessions or paid model runs are used.
 
-The original Linux integration exercised private conversation creation, existing-checkout attachment, server acknowledgements, completed private upload, bounded transcript readback, restart-safe duplicate replay, and latest-state recovery in a disposable repository. Source and sink tests cover interrupted delivery, scope boundaries, errors, and immutable replay with synthetic fixtures.
+Fixtures establish parser, ordering, scope, retry and protocol behavior. They do
+not establish live account or desktop integration. In particular, complete live
+Claude/Codex/OpenCode capture and actual Mac desktop upload remain unverified.
+Do not label a hook as full transcript coverage when it provides only final text.
 
-CI tests deterministic behavior and service rendering on Linux and macOS. It does not sign into desktop apps or upload live histories. A green macOS job does not establish end-to-end Mac recording.
+The supported Delta contract remains6–7. Newer schemas need authoritative review,
+new tests and exact-version live checks before widening support. Adapter versions
+and event requirements are described in [adapter setup](adapters.md).
 
-Conversation coverage excludes hidden reasoning, attachments, and raw tool outputs. Recording is prospective and file coverage begins after attachment. One recorded conversation is not complete project history.
+## Remaining limits
 
-Serial polling under heavy parallel activity can cause temporary stale/catching-up reports. T3 credentials expire after 30 days and require explicit renewal. This release has no automatic renewal or failure-notification service.
+No hidden reasoning, raw tool output or attachments are accepted by generic
+capture. File coverage starts after attachment and can miss early edits. Multiple
+sessions in one checkout share files. Use linked worktrees for independent work.
+Current delivery can process sessions serially; inspect pending/gap/adapter holds
+separately from process availability. Automatic credential renewal and remote MCP
+hosting are not included. Existing T3 credentials retain their 30-day renewal flow.
 
-## Recovery
+No automatic restore is exposed. Latest-state recovery has a narrow Linux proof;
+arbitrary historical point recovery through this bridge remains unverified.
+Opaque receipt versions are not CLI historical-version arguments. Recover into a
+separate checkout or patch and verify before applying; restoring files does not
+rewind any harness's conversation.
 
-**Verified:** latest-state file recovery in a controlled Linux test into a separate Delta-managed checkout. This is a narrow proof, not a guarantee for every repository or platform.
-
-**Unverified:** recovering an arbitrary earlier point through this bridge. Opaque receipt versions are not interchangeable with CLI historical-version arguments. The recorder intentionally exposes no automatic restore command.
-
-For recovery, establish the exact repository, checkout, attachment period, and target state. Prepare a separate checkout or patch and compare before applying changes. Coordinate with active agents. Do not rewind a live checkout to test a backup. Restoring files does not rewind a T3 conversation.
-
-## Report an issue
-
-Include OS and architecture, Python/Git/T3/Delta versions, command, sanitized error type, and a minimal synthetic reproduction. Say separately whether recording, acknowledgement, upload, transcript readback, or recovery failed. Never attach tokens, credentials, private ledgers, client trees, session environments, or unsanitized transcripts.
+Report issues with versions, architecture, sanitized error types and a synthetic
+reproduction. Never attach tokens, raw histories, config, private databases or
+customer code to public issues.

@@ -1,80 +1,97 @@
-# T3 Delta recorder
+# Delta Agent History
 
-Keep working in [T3 Code](https://github.com/pingdotgg/t3code). Record new project conversations and checkout history privately in [Zed Delta](https://delta.dev), then let your coding agent recall relevant prior work when you need it.
+Record coding sessions from different agents into private [Delta](https://delta.dev)
+histories, then recall relevant work from another harness. Keep your preferred
+editor, model, or coding interface. The core does not require T3, Claude, or Codex.
 
-This is a small, independent bridge maintained by ComCreate. It works alongside Git and does not replace commits, branches, or backups. It is not an official T3 or Zed integration.
+Independent ComCreate project. MIT licensed. Linux and macOS. Python 3.11+ with no
+third-party Python runtime dependencies. Delta and Git are separate prerequisites.
+Delta remains the history backend; this does not replace Git or backups.
 
-**Experimental release 0.1.0.** The adapter was exercised with T3 0.1.0 and Delta 0.21.0 (recording contracts 6–7). It deliberately rejects unsupported recording contracts. Linux has live integration evidence; macOS support includes portable code, service tooling, and CI coverage, but has not been verified end to end with the desktop apps. Read the [compatibility and verification limits](docs/compatibility.md).
+## Integration paths
 
-## What you get
+| Source or client | Integration | Coverage |
+|---|---|---|
+| Custom agents | Versioned JSONL over stdin | Reference producer and strict synthetic tests. |
+| Claude Code | Supported prompt and Stop hooks | Prompts and final answers; stable prompt IDs required. |
+| Codex CLI | Wrapper around `exec --json` | Wrapped noninteractive runs, not arbitrary desktop/interactive sessions. |
+| OpenCode | Plugin using supported SDK message reads | Completed visible messages with immutable prefix checks. |
+| T3 Code | Original optional read-only adapter | Existing commands, state and producer identities preserved. |
+| Compatible local MCP clients | Project-bound read-only stdio tools | Recall sessions recorded by these integrations. |
+| ChatGPT and other desktop apps | Supported integration or explicit producer | Complete passive capture requires a verified event feed and is not claimed here. |
 
-- A Python recorder with no third-party runtime dependencies.
-- Explicit enrollment of Git repositories, matched by checkout path and origin.
-- One private Delta conversation for each eligible new T3 conversation.
-- Durable delivery and retry ledgers, scoped read-only T3 authentication, and bounded history retrieval.
-- Linux systemd and macOS launchd service setup.
-- An optional agent skill and recall instruction for Codex, Claude Code, or another harness that supports skills.
+The neutral core has live Linux private-upload/readback evidence through a
+separate stdio MCP client. Source adapters have synthetic fixture tests. The
+original T3 adapter retains live Linux evidence. Live account integration for new
+source adapters and macOS desktop capture remains unverified. See [compatibility](docs/compatibility.md). MCP tool
+access does not automatically expose the client's complete transcript.
 
-Recording runs automatically while the service is active. Recall is performed by an agent when relevant; the instruction makes that a normal part of resuming work, debugging, and revisiting decisions. It does not inject every old transcript into every task.
+## Quick start
 
-## Install and try it
-
-You need Python 3.11+, Git, T3 Code with its CLI, and an authenticated Zed Delta account with access to the app. Install T3 and [Delta](https://delta.dev/docs/installation) through their upstream distribution channels first. Delta currently requires macOS 13+ on Apple Silicon or glibc Linux on x86_64/aarch64. This repository does not bundle either application.
-
-On Linux or macOS, create an isolated Python environment:
+Install and sign into [Zed Delta](https://delta.dev/docs/installation) first. Its
+CLI may be `delta` or `zed-delta`; do not confuse it with Git's diff pager.
+Upstream currently requires glibc Linux or an Apple Silicon Mac on macOS 13+.
 
 ```sh
-git clone https://github.com/comcreate-io/t3-delta-recorder.git
-cd t3-delta-recorder
+git clone https://github.com/comcreate-io/delta-agent-history.git
+cd delta-agent-history
 python3 -m venv .venv
-.venv/bin/python -m pip install .
-```
+. .venv/bin/activate
+python -m pip install .
 
-Ask your agent inside T3 to call `t3_environment_read` and return the `environmentId`. Review the checkout you intend to upload, including tracked files and nonignored untracked files. Then substitute your actual environment ID, repository root, runtime file, and executable paths:
-
-```sh
-.venv/bin/t3-delta init \
-  --project /absolute/path/to/project \
-  --environment-id YOUR_T3_ENVIRONMENT_ID \
-  --t3-runtime-file "$HOME/.t3/userdata/server-runtime.json" \
-  --t3-binary /absolute/path/to/t3 \
-  --delta-binary /absolute/path/to/zed-delta \
+delta-history init \
+  --project /absolute/path/to/reviewed-project \
+  --source generic:local \
+  --delta-binary /absolute/path/to/Zed-Delta-CLI \
   --accept-upload
-.venv/bin/t3-delta auth
-.venv/bin/t3-delta run
 ```
 
-`init` only creates local configuration. `auth` explicitly issues a dedicated read-only T3 credential. `run` starts recording and may upload eligible conversations and checkout data. Keep it running, open the enrolled repository as a T3 project, and create a **new** conversation. Existing conversations are not backfilled, even if you add a new message to them.
-
-In another terminal, check what has been captured:
+Review the repository before giving upload consent. Then try the synthetic
+producer against that approved checkout:
 
 ```sh
-.venv/bin/t3-delta status
-.venv/bin/t3-delta history --thread YOUR_T3_THREAD_ID --messages 1-20
+python examples/producer.py --project /absolute/path/to/reviewed-project | delta-history ingest
+delta-history status
+delta-history once
+delta-history sessions --project /absolute/path/to/reviewed-project
 ```
 
-Use the source T3 `thread_id` shown by status. It is different from the Delta conversation ID. Read [the setup guide](docs/setup.md) before enrolling more repositories, [background service setup](docs/services.md) to keep recording after the terminal closes, and [agent setup](docs/agents.md) to enable routine recall.
-
-If Zed's executable is named `delta` on your system, supply its absolute path with `--delta-binary`. A different program named `delta` is a popular Git diff pager. The recorder does not auto-select that name.
-
-Nix users can use the included flake. See [setup](docs/setup.md#nix).
-
-## Upload and recovery boundaries
-
-“Private” describes Delta's visibility setting. It does **not** mean local-only storage. Eligible conversation messages and checkout files can leave your machine. The bridge never deliberately shares a conversation with your organization. Its filename check is a heuristic, not a secret scanner; `.gitignore` does not protect secrets that are already tracked.
-
-Capture is prospective. File history begins after Delta attaches the checkout, so edits made before attachment can be absent. Hidden reasoning, attachments, and raw tool outputs are excluded from the conversation export. Several conversations using one checkout also share that checkout's files; use separate Git worktrees for independent work.
-
-A transcript acknowledgement, a completed cloud upload, and a verified file restore are separate facts. Latest-state file recovery has a controlled Linux proof. Recovery to an arbitrary earlier point through this bridge remains unverified. The recorder has no automatic restore command and does not rewind T3 conversations.
-
-## Contribute
-
-Run the standard-library test suite from the repository root:
+`ingest` acknowledges private **local queue acceptance**, without contacting Delta.
+`once` attempts delivery. `run` continuously drains the queue. Hooks and plugins
+provide capture; the drainer does not discover arbitrary conversations. Read a
+session using its returned qualified `key`:
 
 ```sh
-python3 -m unittest discover -s tests -v
+delta-history history --project /absolute/path/to/reviewed-project \
+  --session SESSION_KEY --messages 1-20
 ```
 
-See [architecture](docs/architecture.md) for protocol boundaries and [compatibility](docs/compatibility.md) before changing an upstream version or recording contract. Please use synthetic repositories and transcripts in tests and issues. Never include credentials, client inventories, or private recording state.
+Read [setup](docs/setup.md), [adapters](docs/adapters.md),
+[background services](docs/services.md), and [agent/MCP recall](docs/agents.md).
+Nix packaging and original `t3-delta` commands are included.
 
-Licensed under [MIT](LICENSE).
+## Existing T3 users
+
+Previously named `t3-delta-recorder`. Original configuration, services, credentials,
+Delta bindings, and queued payloads remain unchanged. `t3-delta` and
+`t3-delta-service` remain compatibility commands. `delta-history t3 ...` delegates
+to that adapter. Do not point the generic worker at the old state directory.
+[Explicit read-only linking](docs/migration.md) exposes existing T3 sessions through
+shared recall without migrating them.
+
+## Privacy and recovery
+
+Private Delta history is cloud storage. Completed visible messages and attached
+checkout contents can leave your machine, including tracked and nonignored
+untracked files. Enrollment is explicit by repository and source instance. The
+filename heuristic is not a secret scanner; ignoring a tracked secret does not
+remove it from upload coverage.
+
+Reasoning, attachments, raw tool output, and credentials are excluded from generic
+ingress. File coverage begins after attachment. Shared checkouts share files; use
+Git worktrees for independent tasks. Local acceptance, Delta acknowledgement,
+cloud upload, and verified recovery are separate facts.
+
+There is no automatic restore command. Historical point-in-time recovery remains
+unverified. See [architecture](docs/architecture.md), [ingress](docs/ingress.md),
+[security](SECURITY.md), and [contributing](CONTRIBUTING.md).
