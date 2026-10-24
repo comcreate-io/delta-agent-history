@@ -1,130 +1,111 @@
-# Set up T3 Delta recording
+# Setup on Linux and macOS
 
-## Prerequisites
+Use Python 3.11+, Git, and a compatible [Delta installation](https://delta.dev/docs/installation).
+Install upstream applications through their own channels. Delta currently requires
+glibc Linux on x86_64/aarch64 or macOS 13+ on Apple Silicon. The bridge does not
+provide account access or support unsupported upstream hardware.
 
-- Linux or macOS, Python 3.11+, and Git on `PATH`.
-- T3 Code and its supported `t3` CLI. The tested T3 version is 0.1.0.
-- Zed Delta, tested at 0.21.0, with its CLI and an account allowed to use it.
-- One or more actual Git repository roots with a supported, credential-free `origin` remote.
-
-Install Zed Delta through its [official installation guide](https://delta.dev/docs/installation), which currently requires macOS 13+ on Apple Silicon or glibc Linux on x86_64/aarch64. Install its CLI using the app's “Install CLI” action or the upstream manual path instructions.
-
-Zed Delta and the Git diff pager named `delta` are different tools. Locate Zed's executable and pass its absolute path. The recorder's default name is `zed-delta`; if upstream installs it as `delta`, specify that path explicitly. Complete upstream `auth login` and any browser consent or “Open Delta” handoff yourself. Being signed into GitHub alone does not prove the Delta desktop app is signed in.
-
-Check [compatibility](compatibility.md) before substituting newer versions. Account availability and upstream platform support are separate from this bridge's Python portability.
-
-## Install the Python package
+## Install
 
 ```sh
-git clone https://github.com/comcreate-io/t3-delta-recorder.git
-cd t3-delta-recorder
+git clone https://github.com/comcreate-io/delta-agent-history.git
+cd delta-agent-history
 python3 -m venv .venv
-.venv/bin/python -m pip install .
-.venv/bin/t3-delta --help
+. .venv/bin/activate
+python -m pip install .
+delta-history --help
 ```
 
-Keep the repository and virtual environment at a stable path if you install a background service. No global Python installation or administrator privileges are required for this bridge. On a system managed declaratively, install it through that system's package configuration instead of modifying its global environment.
+No global Python install or root access is needed. Some Linux distributions
+package venv support separately. Use your supported Python environment. On NixOS,
+use the included flake and declarative configuration.
 
-## Select and review repository scope
+Keep a service's installation path stable. GUI agents may not inherit terminal
+PATH; supply the full `.venv/bin/delta-history` path where necessary. Wheels also
+include skills, instructions, schema and integration files under
+`share/delta-agent-history/` inside the environment prefix.
 
-Open each intended project at its Git root. `git -C /path/to/project rev-parse --show-toplevel` should return that root. Review its `origin`, tracked files, ignored files, and nonignored untracked files before authorizing upload.
+## Enroll repositories and producer instances
 
-The filename gate refuses common sensitive-looking names, but does not inspect contents or prove a repository is safe. Files named as examples, samples, templates, fixtures, or tests are allowed by that heuristic. Review them too. A tracked secret is still tracked when added to `.gitignore`.
-
-Enrollment is explicit. There is no automatic discovery of your home directory or project tree. Repeat `--project` for each repository in the initial configuration. A second clone with the same remote is not automatically enrolled. A genuine linked Git worktree is permitted only when its Git common directory belongs to an approved repository.
-
-## Create configuration
-
-Ask your agent in T3 to call the supported `t3_environment_read` tool and give you its `environmentId`. Do not extract this from T3's private database or copy provider credentials.
-
-The usual runtime file is `$HOME/.t3/userdata/server-runtime.json`. If you run a custom T3 data directory, select that instance's runtime file and executable, and supply `--t3-base-dir /absolute/path/to/custom-base` during `init` so later credential issuance reaches the same instance. Confirm these refer to the same running environment.
+Review actual roots, origins, tracked files, nested checkouts, and nonignored
+untracked files before authorizing upload. The filename gate is a heuristic, not
+a content scanner or complete inventory. Review examples and fixtures too.
 
 ```sh
-.venv/bin/t3-delta init \
-  --project /absolute/path/to/first-project \
-  --project /absolute/path/to/second-project \
-  --environment-id YOUR_T3_ENVIRONMENT_ID \
-  --t3-runtime-file "$HOME/.t3/userdata/server-runtime.json" \
-  --t3-binary /absolute/path/to/t3 \
-  --delta-binary /absolute/path/to/zed-delta \
+delta-history init \
+  --project /absolute/path/to/project \
+  --source generic:local \
+  --source claude-code:laptop \
+  --source codex:laptop \
+  --source opencode:laptop \
+  --delta-binary /absolute/path/to/Zed-Delta-CLI \
   --accept-upload
 ```
 
-Omit the second `--project` if you only want one. Optionally supply `--delta-organization ORGANIZATION_ID` to choose the account organization explicitly; visibility remains private. Without it, the Delta CLI must be able to resolve the account context.
+Omit unused sources. Repeat `--project` for each repository. Source kind and
+instance are lowercase slugs; labels are not authentication or authorization.
+The actual Git identity and locally configured scope remain authoritative.
 
-`init` validates local checkout identities and filename boundaries, resolves executables, and writes an exclusive local config. It does not issue a credential, contact Delta, upload files, or install a service. It refuses to overwrite an existing config, including a symlink. It records an enrollment timestamp for each selected repository. [The example configuration](../examples/config.example.json) illustrates the shape; initialize your own paths and current timestamps instead of copying its placeholders unchanged.
+`init` writes a new private config and refuses overwrites. It does not issue a
+harness credential, upload, or activate a service. Generic operation needs no T3
+runtime, environment ID, or credential. Complete Delta's own sign-in and browser
+handoff yourself. If its CLI is named `delta`, pass the actual absolute path;
+automatic discovery only looks for `zed-delta` to avoid the unrelated Git pager.
+An optional `--delta-organization ID` selects the private account context.
 
-The same defaults are used on Linux and macOS:
+## Paths and operation
 
-| Purpose | Default path |
+| Item | Generic default |
 |---|---|
-| Configuration | `~/.config/t3-delta-recorder/config.json` |
-| Private recorder state | `~/.local/state/t3-delta-recorder/` |
-| Scoped T3 credential | `~/.local/state/t3-delta-recorder/token.json` |
+| Config | `~/.config/delta-agent-history/config.json` |
+| Private state | `~/.local/state/delta-agent-history/` |
+| Adapter correlation journal | Inside that private state directory |
+| Existing T3 state | Separate and unchanged; see [migration](migration.md) |
 
-Use global options **before** the subcommand when selecting other locations:
-
-```sh
-.venv/bin/t3-delta --config /absolute/path/config.json \
-  --state-dir /absolute/path/private-state status
-```
-
-Use those same paths for every later command and service configuration. Do not commit the config or state directory: they contain local project metadata, and the state contains a credential and recorded messages.
-
-## Authenticate and record
-
-With T3 running and Delta signed in:
+For custom locations put global flags before the subcommand on every call:
 
 ```sh
-.venv/bin/t3-delta auth
-.venv/bin/t3-delta run
+delta-history --config /absolute/config.json --state-dir /absolute/private-state status
 ```
 
-`auth` issues a dedicated 30-day T3 session with the `orchestration:read` scope and `mcp-client` subject, validates the expected environment, and stores it privately. It does not use your model-provider credentials. Never paste its token into an issue or agent conversation.
-
-Leave `run` active. Then create a **new T3 conversation** under an enrolled project root and exchange a few messages. Eligibility starts after both repository enrollment and the recorder's first run. Old conversations are not backfilled, and posting to an old conversation does not enroll it.
-
-There is a delay between discovering a conversation, creating its private Delta history, attaching its checkout, and completing upload. File coverage starts only after attachment and can miss early edits. For independent tasks, select distinct Git worktrees in T3 before agents start changing files.
-
-## Verify the result
+Try the reference producer and inspect metadata:
 
 ```sh
-.venv/bin/t3-delta status
-.venv/bin/t3-delta history --thread YOUR_T3_THREAD_ID --messages 1-20
+python examples/producer.py --project /absolute/path/to/project | delta-history ingest
+delta-history once
+delta-history sessions --project /absolute/path/to/project
+delta-history run
 ```
 
-In status, `threads` contains source T3 IDs and directories. Match `threads.external_id` to `delta.external_id` to inspect the Delta binding, `message_count`, pending queue, acknowledgements, visibility, upload state, and attachment time. Do not infer cloud backup from the service being alive or an acknowledgement alone. History reads are bounded to 20 messages per request and clamp the requested end to captured messages.
+`ingest` is local only. `once` and `run` may attach the checkout and upload accepted
+messages. `run` drains events, so configure an [adapter](adapters.md) for real
+capture. Set up [services](services.md) after foreground verification.
 
-Once this works in the foreground, use [systemd or launchd setup](services.md). Install the [agent skill and recall instruction](agents.md) if you want agents to consult prior project work automatically.
+Recording is prospective relative to enrollment, with local receipt times retained.
+A supplied timestamp or exported transcript cannot recreate previous checkout
+states. Gaps wait for missing sequences; conflicting IDs halt the session.
 
-## Add repositories later
+## Changes and troubleshooting
 
-Stop the recorder before manually editing its configuration. Add the canonical path, exact origin, and a current UTC `enrolled_after` timestamp to `allowed_projects`; include its remote in `allowed_remotes`. If outside `projects_root`, include its canonical path in `additional_project_paths`. Do not turn the exact allowlist into a wildcard or backdate enrollment to import old conversations.
+Stop the drainer before deliberately editing its config. Review new checkouts,
+add exact path/origin/current enrollment timestamps, and preserve source IDs and
+journals. Never erase a conflict by deleting state. Use a new reviewed source
+instance when intentionally starting a separate producer. Legacy T3 renewal uses
+its own stop/auth/start procedure.
 
-Review the repository's upload contents first. Resume the recorder and create a new T3 conversation. Alternatively, initialize a separate config and state pair for a separate recorder instance. `init` refuses overwrites so it cannot silently change an existing enrollment.
-
-## Troubleshooting
-
-| Observation | Check |
-|---|---|
-| No recorded conversation | Was it created after the first recorder run? Is T3 bound to the approved root, rather than an umbrella directory or duplicate clone? |
-| Filename or scope review hold | Review the checkout and configuration. Do not remove the gate simply to make status green. |
-| `unavailable` | Confirm the correct T3 instance is running, Delta is signed in, and executable/runtime paths still exist. |
-| `catching_up` or `stale` | Check pending items and timestamps. Serial polling can take longer with many subagents; this does not by itself prove data loss or a crash. |
-| `needs_review` or halted Delta session | Preserve the state, inspect compatibility and checkout identity, and investigate. Do not delete the ledgers or fabricate acknowledgement state. |
-| No history match | This means no captured match, not that the project has no prior work. Continue from current source. |
-| Credential expired | Stop the service, run `t3-delta auth` with the same config/state, then restart it. Credential renewal is explicit. |
-| Newer upstream contract rejected | Check [compatibility](compatibility.md); review and test the adapter before widening support. |
-
-Avoid posting raw logs, transcripts, tokens, config files, or state databases publicly. Error output is intentionally terse; share sanitized error types, versions, and reproduction steps using synthetic data.
+If capture is absent, check the adapter installation, executable path, enrolled
+source instance, and actual root. For pending upload check Delta sign-in, versions,
+queue gaps and status. A running process is not proof of upload. Do not post
+config, databases, prompt files, raw transcripts, or tokens in public reports.
 
 ## Nix
-
-The repository includes a flake for declarative or scoped use. From this checkout:
 
 ```sh
 nix build
 nix run . -- --help
+nix develop
 ```
 
-Configure persistent installation through your NixOS or Home Manager setup. The package does not automatically enroll projects, issue credentials, or activate a service. Follow the same explicit setup and upload review above.
+The flake supplies neutral and compatibility commands on x86_64/aarch64 Linux and
+aarch64 Darwin. Configure persistent packages/services through NixOS, Home Manager
+or nix-darwin. Nothing is enrolled or activated automatically.

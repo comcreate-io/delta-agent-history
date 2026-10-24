@@ -3,4 +3,7 @@ recursive-include docs *.md
 recursive-include instructions *.md
 recursive-include skills *.md
 recursive-include examples *.json
+recursive-include examples *.py
+recursive-include schemas *.json
+recursive-include integrations *.json *.mjs
 recursive-include tests *.py

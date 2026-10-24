@@ -1,191 +1,90 @@
-# Run the recorder in your login session
+# Background delivery on Linux and macOS
 
-Complete the README setup, explicit repository enrollment, scoped authentication,
-and foreground verification first. The examples below assume the recorder's
-Python virtual environment is activated and `command -v t3-delta` returns an
-absolute executable path. Keep that environment in a permanent location: moving
-or deleting it breaks the installed service.
+First verify enrollment, local ingestion, and foreground delivery. The service
+runs the **generic queue drainer**. Configure a hook, wrapper or plugin separately
+for capture. The service does not discover arbitrary applications' transcripts.
+Existing T3 polling services remain separate and unchanged.
 
-These are **per-user login services**, not system-wide daemons. T3 Code and Zed
-Delta must be running and signed in for capture and upload to make progress.
-Starting this service does not launch or authenticate either application. When
-they are unavailable, the recorder waits and retries. Inspect `t3-delta status`
-after returning to your desktop.
-
-The renderer only writes a service file. It never loads, starts, stops, or enables
-a service. Do not run these commands with `sudo` or install both templates.
-If your machine already has a recorder service, use that service's existing
-configuration instead of installing a second copy.
-
-## Paths and logs
-
-Both platforms can use the package defaults:
+Examples assume an activated virtual environment in a permanent location. Use
+absolute executable/config/state paths. GUI sessions do not load your interactive
+shell startup files. Delta's path is stored in config; Git must also be available
+on the service PATH. Templates include standard system paths and Linux Nix profiles.
 
 ```sh
-mkdir -p "$HOME/.local/state/t3-delta-recorder"
-chmod 700 "$HOME/.local/state/t3-delta-recorder"
+mkdir -p "$HOME/.local/state/delta-agent-history"
+chmod 700 "$HOME/.local/state/delta-agent-history"
 ```
 
-The state directory must belong to you. Choose a local private directory, not a
-symlink, shared folder, or cloud-synced folder. The service appends stdout and
-stderr to `recorder.log` inside this directory with umask `077`. The renderer
-does not create that directory. Logs contain sanitized status and error classes;
-the state databases contain private conversation records. Neither belongs in a
-Git repository.
+Private logs append to `recorder.log` inside this directory; SQLite journals also
+contain private messages. Do not use a shared/cloud-synced directory or symlink.
+The renderer only writes a mode 600 file and never activates a job. It refuses
+existing files unless `--force` is explicit, and rejects symlink outputs.
 
-GUI login services do not read interactive shell startup files. `init` resolves
-`t3_binary` and `delta_binary` to absolute paths; verify they still point to the
-correct executables after an application update. The templates provide standard
-system executable directories for Git, including `/usr/bin` on macOS and the
-usual Nix system profiles on Linux. If Git exists only in a custom shell PATH,
-adjust the generated service's `PATH` explicitly before loading it. On macOS,
-make sure `/usr/bin/git --version` succeeds (Apple's command-line tools may need
-to be installed first).
+## Linux systemd user service
 
-Paths with spaces and shell metacharacters are passed as literal arguments.
-Relative paths, control characters, and `..` components are rejected. Linux
-state paths additionally reject double quotes, backslashes, and trailing spaces
-because log-path directives use different parsing from command arguments.
-The renderer refuses to overwrite a file unless `--force` is supplied and always
-refuses a symlink output. Creating a new service file does not replace any
-already loaded service; reload it explicitly after editing.
-
-## Linux with a systemd user manager
-
-Requires systemd 240 or newer for append-only file logging. From the activated
-Python environment:
+Requires systemd 240+ for append-only file logging. No sudo or lingering is needed:
 
 ```sh
 mkdir -p "$HOME/.config/systemd/user"
-python -m t3_delta.services \
-  --platform linux \
-  --executable "$(command -v t3-delta)" \
-  --config "$HOME/.config/t3-delta-recorder/config.json" \
-  --state-dir "$HOME/.local/state/t3-delta-recorder" \
-  --output "$HOME/.config/systemd/user/t3-delta-recorder.service"
-
-systemd-analyze --user verify "$HOME/.config/systemd/user/t3-delta-recorder.service"
+delta-history-service --platform linux \
+  --executable "$(command -v delta-history)" \
+  --config "$HOME/.config/delta-agent-history/config.json" \
+  --state-dir "$HOME/.local/state/delta-agent-history" \
+  --output "$HOME/.config/systemd/user/delta-agent-history.service"
+systemd-analyze --user verify "$HOME/.config/systemd/user/delta-agent-history.service"
 systemctl --user daemon-reload
-systemctl --user enable --now t3-delta-recorder.service
-systemctl --user status t3-delta-recorder.service
-t3-delta status
+systemctl --user enable --now delta-agent-history.service
+systemctl --user status delta-agent-history.service
 ```
 
-The service starts with your user manager, normally at login. It does not require
-or enable lingering; it has nothing to capture when your desktop applications
-are closed. `Restart=on-failure` retries a failed process after ten seconds.
+Stop/start/restart with `systemctl --user stop|start|restart delta-agent-history`.
+After changing the definition, run daemon-reload and restart. To uninstall only
+the service, disable it with `--now`, remove that unit file, then daemon-reload.
 
-Read logs, stop, or restart:
-
-```sh
-tail -n 50 "$HOME/.local/state/t3-delta-recorder/recorder.log"
-systemctl --user stop t3-delta-recorder.service
-systemctl --user start t3-delta-recorder.service
-systemctl --user restart t3-delta-recorder.service
-```
-
-To regenerate the same file, add `--force` to the renderer command, then run
-`systemctl --user daemon-reload` and `systemctl --user restart
-t3-delta-recorder.service`. Do not use `--force` to replace an unrelated service.
-
-Uninstall only the service:
-
-```sh
-systemctl --user disable --now t3-delta-recorder.service
-rm "$HOME/.config/systemd/user/t3-delta-recorder.service"
-systemctl --user daemon-reload
-```
-
-See the authoritative [systemd service command rules](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)
-and [output/logging directives](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
-
-## Linux without systemd
-
-The recorder can run directly in any Linux desktop terminal:
-
-```sh
-t3-delta \
-  --config "$HOME/.config/t3-delta-recorder/config.json" \
-  --state-dir "$HOME/.local/state/t3-delta-recorder" \
-  run
-```
-
-Use Ctrl+C to stop it. For unattended operation, have your distribution's user
-session supervisor run the same executable and arguments, using a private state
-directory, restrictive umask, and a restart delay. No root access or system-wide
-init integration is needed. This project does not install an OpenRC, runit,
-s6, or desktop-autostart configuration.
+On Linux without systemd, use `delta-history run` in a terminal, or configure your
+user-session supervisor to launch the same literal arguments with restrictive
+umask and restart delay. This project does not install OpenRC/runit/s6 integration.
 
 ## macOS LaunchAgent
 
-Run these commands in Terminal while logged in to the desktop account that runs
-T3 and Delta. This installs a LaunchAgent in your own GUI session.
+Run in your own logged-in GUI account, never with sudo:
 
 ```sh
 mkdir -p "$HOME/Library/LaunchAgents"
-python -m t3_delta.services \
-  --platform darwin \
-  --executable "$(command -v t3-delta)" \
-  --config "$HOME/.config/t3-delta-recorder/config.json" \
-  --state-dir "$HOME/.local/state/t3-delta-recorder" \
-  --output "$HOME/Library/LaunchAgents/io.comcreate.t3-delta-recorder.plist"
-
-plutil -lint "$HOME/Library/LaunchAgents/io.comcreate.t3-delta-recorder.plist"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.comcreate.t3-delta-recorder.plist"
-launchctl print "gui/$(id -u)/io.comcreate.t3-delta-recorder"
-t3-delta status
+delta-history-service --platform darwin \
+  --executable "$(command -v delta-history)" \
+  --config "$HOME/.config/delta-agent-history/config.json" \
+  --state-dir "$HOME/.local/state/delta-agent-history" \
+  --output "$HOME/Library/LaunchAgents/io.comcreate.delta-agent-history.plist"
+plutil -lint "$HOME/Library/LaunchAgents/io.comcreate.delta-agent-history.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.comcreate.delta-agent-history.plist"
+launchctl print "gui/$(id -u)/io.comcreate.delta-agent-history"
 ```
 
-`RunAtLoad` starts the recorder when loaded or at subsequent GUI logins.
-`KeepAlive.SuccessfulExit=false` restarts an unsuccessful process, throttled to
-fifteen seconds. The plist supplies a separate `ProgramArguments` entry for each
-argument, without a shell. User folders protected by macOS privacy controls may
-require permission for the actual recorder/Python process. Approve only the
-folders you intend to enroll; a permission failure is not a reason to run it as
-root.
+Stop with `launchctl bootout "gui/$(id -u)/io.comcreate.delta-agent-history"`.
+Start again with bootstrap. Restart a loaded job with
+`launchctl kickstart -k "gui/$(id -u)/io.comcreate.delta-agent-history"`.
+For replacement, boot it out, render with `--force`, lint, then bootstrap.
+To uninstall only the LaunchAgent, boot it out and remove its plist.
 
-Read logs, stop, or start again:
+The job starts at GUI login and restarts failed runs. Arguments are distinct plist
+entries, not shell strings. `/usr/bin/git --version` must work; install Apple's
+command-line tools if needed. macOS privacy controls may require approval for the
+actual Python process to access the enrolled folder. Do not solve that by running
+as root. Unit CI is separate from live desktop upload verification.
+
+## Lifecycle and logs
 
 ```sh
-tail -n 50 "$HOME/.local/state/t3-delta-recorder/recorder.log"
-launchctl bootout "gui/$(id -u)/io.comcreate.t3-delta-recorder"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.comcreate.t3-delta-recorder.plist"
+tail -n 50 "$HOME/.local/state/delta-agent-history/recorder.log"
+delta-history status
 ```
 
-To restart a currently loaded agent:
+Stop the service before deliberately changing identity/configuration or archiving
+large logs. Logs are not automatically rotated. A service being alive is not proof
+of ingestion, acknowledgement or cloud upload. Delta must be available and signed
+in; transient delivery failures retain queued data.
 
-```sh
-launchctl kickstart -k "gui/$(id -u)/io.comcreate.t3-delta-recorder"
-```
-
-To replace its definition, first boot it out, regenerate using `--force`, lint,
-and bootstrap the replacement. `bootstrap` normally rejects an already loaded
-label. Use `launchctl print` to inspect the existing job rather than installing a
-duplicate or repeatedly retrying it.
-
-Uninstall only the LaunchAgent:
-
-```sh
-launchctl bootout "gui/$(id -u)/io.comcreate.t3-delta-recorder"
-rm "$HOME/Library/LaunchAgents/io.comcreate.t3-delta-recorder.plist"
-```
-
-Apple documents the agent lifecycle and plist keys in
-[Creating Launch Daemons and Agents](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)
-and its [launchd.plist reference source](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5).
-Use the `man launchctl` and `man launchd.plist` pages shipped with your macOS
-release for the current `bootstrap`, `bootout`, `print`, and `kickstart` commands.
-The renderer's macOS XML and argument serialization are tested on Linux; real
-macOS service startup and T3/Delta capture require verification on a Mac.
-
-## Stopping is not deleting history
-
-Stopping or uninstalling a service preserves the recorder's durable queue,
-credentials, and Delta attachments. It does not delete a Delta thread, detach a
-checkout, rewind files, or revoke your T3 session. Restarting uses the existing
-state, including pending delivery. Do not remove the state directory as a routine
-fix for an error: doing so loses delivery and identity bookkeeping.
-
-Logs are not automatically rotated. Stop the recorder before archiving or
-truncating a large `recorder.log`, preserve the directory permissions, then
-restart it. Keep private logs and databases out of public support reports.
+Stopping preserves queues and Delta attachments. It neither detaches existing
+checkouts nor deletes cloud history or rewinds files. Do not remove state to clear
+a conflict. Keep the original T3 worker on its own original state and label.

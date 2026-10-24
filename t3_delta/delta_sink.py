@@ -97,7 +97,7 @@ def delivery_health(session):
 class DeltaSink:
     SOURCE = "t3-code"
 
-    def __init__(self, state_dir: Path, binary: str = "zed-delta", timeout=30, *, organization=None):
+    def __init__(self, state_dir: Path, binary: str = "zed-delta", timeout=30, *, organization=None, producer_name="T3 Code"):
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.state_dir.is_symlink():
@@ -106,6 +106,7 @@ class DeltaSink:
         self.binary = binary
         self.timeout = timeout
         self.organization = organization
+        self.producer_name = producer_name
         database = self.state_dir / "sink.sqlite3"
         if database.is_symlink():
             raise DeltaError("Recorder database must not be a symlink")
@@ -386,7 +387,7 @@ class DeltaSink:
             size += length
         result = self._run([
             "thread", "append", session["thread_id"], "--source", self.SOURCE,
-            "--external-id", external_id, "--producer-name", "T3 Code", "--acknowledge", "server",
+            "--external-id", external_id, "--producer-name", self.producer_name, "--acknowledge", "server",
         ], input="".join(row["body"] for row in batch))
         acknowledged = 0
         previous_frontier = live["producer"]["next_sequence"]
