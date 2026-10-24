@@ -10,6 +10,9 @@ from unittest.mock import patch
 from delta_history.mcp import MAX_OUTPUT, PROTOCOL_VERSION, Server, serve
 
 
+PROJECT = Path("/tmp/project").resolve()
+
+
 def initialize(identifier=1):
     return {"jsonrpc": "2.0", "id": identifier, "method": "initialize", "params": {
         "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "fixture", "version": "1"}}}
@@ -40,7 +43,7 @@ class McpTests(unittest.TestCase):
             self.assertNotIn("project", tool["inputSchema"]["properties"])
         result = self.server.handle(request("tools/call", {"name": "history_sessions"}))["result"]
         self.assertEqual(json.loads(result["content"][0]["text"]), [{"session_key": "fixture"}])
-        self.assertEqual(self.sessions.call_args.args[-1], Path("/tmp/project"))
+        self.assertEqual(self.sessions.call_args.args[-1], PROJECT)
 
     def test_unknown_and_malformed_arguments_never_reach_history(self):
         self.ready()
@@ -57,7 +60,7 @@ class McpTests(unittest.TestCase):
         with patch("delta_history.mcp.project_history", return_value=[{"role": "user", "text": "synthetic"}]) as history:
             result = self.server.handle(request("tools/call", {"name": "history_read", "arguments": {"session": "fixture", "messages": "1-2"}}))
             self.assertFalse(result["result"]["isError"])
-            self.assertEqual(history.call_args.args[2:], (Path("/tmp/project"), "fixture", "1-2"))
+            self.assertEqual(history.call_args.args[2:], (PROJECT, "fixture", "1-2"))
         with patch("delta_history.mcp.project_history", side_effect=RuntimeError("secret-value")):
             result = self.server.handle(request("tools/call", {"name": "history_read", "arguments": {"session": "fixture"}}))
             self.assertTrue(result["result"]["isError"])
@@ -74,7 +77,7 @@ class McpTests(unittest.TestCase):
         self.assertEqual(value["sessions_count"], 0)
         self.assertEqual(value["adapters"], {"pending": 0, "halted": 1})
         self.assertNotIn("must-not-leak", json.dumps(value))
-        health.assert_called_once_with(Path("/tmp/not-created-state"), project="/tmp/project")
+        health.assert_called_once_with(Path("/tmp/not-created-state"), project=str(PROJECT))
         with patch("delta_history.adapters.common.adapter_health", return_value={"pending": 2, "halted": 0}):
             result = self.server.handle(request("tools/call", {"name": "history_status"}))["result"]
         self.assertEqual(json.loads(result["content"][0]["text"])["health"]["phase"], "catching_up")
