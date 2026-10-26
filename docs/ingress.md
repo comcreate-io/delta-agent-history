@@ -19,6 +19,8 @@ enrolled in config. Session and event IDs are bounded to 256 UTF-8 bytes.
 No tool output, hidden reasoning, attachment, credential or arbitrary metadata
 fields are accepted. Only complete visible text is eligible. Current limits:
 1 MiB per record,256 KiB message text,4 MiB and 100 records per ingestion batch.
+Ingress and MCP JSON requests are limited to 64 nested arrays or objects;
+brackets inside quoted text do not count toward this limit.
 Unknown fields/types, duplicate JSON keys, malformed input and over-budget data
 are rejected. JSON Schema character limits do not replace runtime byte limits.
 

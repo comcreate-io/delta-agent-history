@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "delta-agent-history"
-version = "0.2.0"
+version = "0.3.0"
 description = "Harness-independent coding session recording and repository-scoped recall through Delta"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,7 +36,8 @@ include = ["delta_history*", "t3_delta*"]
 
 [tool.setuptools.data-files]
 "share/delta-agent-history/skills/delta-history" = ["skills/delta-history/SKILL.md"]
-"share/delta-agent-history/instructions" = ["instructions/project-recall.md"]
+"share/delta-agent-history/skills/delta-enroll" = ["skills/delta-enroll/SKILL.md"]
+"share/delta-agent-history/instructions" = ["instructions/project-recall.md", "instructions/project-enrollment.md"]
 "share/delta-agent-history/schemas" = ["schemas/event.schema.json"]
 "share/delta-agent-history/integrations" = ["integrations/opencode-plugin.mjs", "integrations/claude-hooks.example.json"]
 "share/t3-delta-recorder/skills/t3-delta-history" = ["skills/t3-delta-history/SKILL.md"]

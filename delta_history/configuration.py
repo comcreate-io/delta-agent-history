@@ -6,6 +6,7 @@ from pathlib import Path
 from t3_delta.engine import checkout_identity, check_filenames, git_value, remote_key, utc_now, common_directory
 from t3_delta.setup import executable, SetupError
 from .protocol import SLUG, utc_timestamp
+from t3_delta.project_scope import registry_path, with_project_registry
 
 
 def validate(config):
@@ -49,11 +50,13 @@ def validate(config):
     if legacy is not None:
         if not isinstance(legacy, dict) or set(legacy) != {"config", "state"} or any(not isinstance(v, str) or not Path(v).is_absolute() or str(Path(v).resolve()) != v for v in legacy.values()):
             raise ValueError("legacy_t3 requires exact canonical absolute config and state paths")
+    registry_path(config)
     return config
 
 
 def load(path):
-    return validate(json.loads(Path(path).expanduser().read_text()))
+    base = validate(json.loads(Path(path).expanduser().read_text()))
+    return validate(with_project_registry(base))
 
 
 def inspect_scope(config, project):
@@ -77,7 +80,7 @@ def resolve_project(config, project):
     return inspect_scope(config, project)[0]
 
 
-def initialize(config_path, *, projects, sources, delta_binary=None, accept_upload=False, delta_organization=None, legacy_t3=None):
+def initialize(config_path, *, projects, sources, delta_binary=None, accept_upload=False, delta_organization=None, legacy_t3=None, project_enrollment_file=None):
     if not accept_upload:
         raise SetupError("Pass --accept-upload after reviewing the selected repositories. Future recording uploads visible conversations and tracked/nonignored checkout files privately to Delta.")
     enrollments = []
@@ -106,6 +109,8 @@ def initialize(config_path, *, projects, sources, delta_binary=None, accept_uplo
               "delta_binary": executable(delta_binary, "zed-delta")}
     if delta_organization:
         config["delta_organization"] = delta_organization
+    if project_enrollment_file is not None:
+        config["project_enrollment_file"] = str(Path(project_enrollment_file).expanduser())
     if legacy_t3 is not None:
         config["legacy_t3"] = {k: str(Path(v).expanduser().resolve()) for k, v in legacy_t3.items()}
         if not Path(config["legacy_t3"].get("config", "")).is_file() or not Path(config["legacy_t3"].get("state", "")).is_dir():

@@ -70,3 +70,46 @@ class StatusTests(unittest.TestCase):
             result=history(self.state,self.config,'thread','3-20')
             self.assertEqual(result['messages'],[])
             run.assert_not_called()
+
+    def test_progress_preserves_completed_timestamp_and_still_expires(self):
+        current = ['2026-10-23T12:00:00+00:00']
+        engine = Engine(self.config, self.state, None, None, clock=lambda: current[0])
+        self.addCleanup(engine.close)
+        engine.set_health('watching')
+        current[0] = '2026-10-23T12:01:30+00:00'
+        engine.set_progress('source_capture')
+        with patch('t3_delta.cli.utc_now', return_value=current[0]):
+            status = read_status(self.state, self.config)
+        self.assertEqual(status['health']['phase'], 'catching_up')
+        self.assertEqual(status['health']['checked_at'], '2026-10-23T12:00:00+00:00')
+        self.assertEqual(status['progress'], {'stage':'source_capture', 'updated_at':current[0]})
+        with patch('t3_delta.cli.utc_now', return_value='2026-10-23T12:02:31+00:00'):
+            self.assertEqual(read_status(self.state, self.config)['health']['phase'], 'stale')
+
+    def test_progress_cannot_hide_source_or_cloud_failure(self):
+        current = ['2026-10-23T12:00:00+00:00']
+        engine = Engine(self.config, self.state, None, None, clock=lambda: current[0])
+        self.addCleanup(engine.close)
+        engine.set_health('unavailable', 'T3HTTPError')
+        current[0] = '2026-10-23T12:01:30+00:00'
+        engine.set_progress('retry_delivery')
+        with patch('t3_delta.cli.utc_now', return_value=current[0]):
+            health = read_status(self.state, self.config)['health']
+        self.assertEqual(health['phase'], 'unavailable')
+        self.assertEqual(health['error'], 'T3HTTPError')
+        current[0] = '2026-10-23T12:00:00+00:00'
+        engine.set_health('watching')
+        current[0] = '2026-10-23T12:01:30+00:00'
+        engine.set_progress('source_capture')
+        with contextlib.closing(sqlite3.connect(self.state/'sink.sqlite3')) as db, db:
+            db.execute('UPDATE sessions SET upload=?', (json.dumps({'state':'failed','error':'synthetic'}),))
+        with patch('t3_delta.cli.utc_now', return_value=current[0]):
+            self.assertEqual(read_status(self.state, self.config)['health']['phase'], 'needs_review')
+
+    def test_status_without_progress_keeps_existing_stale_detection(self):
+        engine = Engine(self.config, self.state, None, None,
+                        clock=lambda: '2026-10-23T12:00:00+00:00')
+        self.addCleanup(engine.close)
+        engine.set_health('watching')
+        with patch('t3_delta.cli.utc_now', return_value='2026-10-23T12:01:01+00:00'):
+            self.assertEqual(read_status(self.state, self.config)['health']['phase'], 'stale')

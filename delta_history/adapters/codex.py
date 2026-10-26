@@ -9,6 +9,7 @@ import tempfile
 import uuid
 
 from ..protocol import MAX_LINE_BYTES, MAX_TEXT_BYTES
+from ..core import _sqlite_busy
 from .common import AdapterError, Journal, required_id, visible_text
 
 
@@ -28,6 +29,17 @@ def item_message(item):
             lines.append(("[x] " if step["completed"] else "[ ] ") + visible_text(step.get("text")))
         return "plan", visible_text("\n".join(lines))
     return None
+
+
+def _flush_local(journal):
+    try:
+        journal.flush()
+    except Exception as error:
+        if not _sqlite_busy(error):
+            raise
+        # Frozen journal records remain pending for the independent drainer.
+        return False
+    return True
 
 
 def codex_run(config, state, instance, project, codex_binary, prompt_file, model=None):
@@ -53,7 +65,7 @@ def codex_run(config, state, instance, project, codex_binary, prompt_file, model
             journal.open()
             journal.add("prompt", "message.completed", role="user", text=prompt)
             journal.set_metadata({"run_id":session, "capture":"starting"})
-        journal.flush()
+        ingress_pending = not _flush_local(journal)
         args = [str(binary), "exec", "--json", "--cd", journal.project]
         if model:
             args += ["-m",model]
@@ -70,7 +82,7 @@ def codex_run(config, state, instance, project, codex_binary, prompt_file, model
                     metadata = journal.metadata()
                     metadata["capture"] = "launch_failed"
                     journal.set_metadata(metadata)
-                journal.flush()
+                _flush_local(journal)
                 raise AdapterError("Codex could not be started") from None
             capture_failed, turn_completed, turn_failed, thread = False, False, False, None
             total = 0
@@ -108,8 +120,8 @@ def codex_run(config, state, instance, project, codex_binary, prompt_file, model
                                     fields["model"] = model
                                 with journal.transaction():
                                     journal.add("item:"+required_id(event["item"].get("id")), "message.completed", **fields)
-                                journal.flush()
                                 print(message[1], flush=True)
+                                ingress_pending = not _flush_local(journal)
                         elif kind == "turn.completed":
                             if thread is None:
                                 raise AdapterError("Codex completed before thread creation")
@@ -138,12 +150,14 @@ def codex_run(config, state, instance, project, codex_binary, prompt_file, model
                     metadata = journal.metadata()
                     metadata.update({"capture":"completed" if complete else "incomplete", "exit_code":code})
                     journal.set_metadata(metadata)
-                journal.flush()
+                ingress_pending = not _flush_local(journal)
             except Exception:
                 capture_failed = True
             if capture_failed:
                 journal.halt()
             if not complete or capture_failed:
                 print("Delta history: wrapped run or capture was incomplete; inspect local status.", file=sys.stderr)
+            elif ingress_pending:
+                print("Delta history: captured records are queued locally; inspect local status.", file=sys.stderr)
             # Never relaunch a model to replay capture. Return the process exit status.
             return code if code >= 0 else 128 - code

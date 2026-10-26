@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from delta_history.cli import MAX_LINE, drain_once, drain_run, main, parse_json, private_input, read_events
+from delta_history.cli import MAX_JSON_DEPTH, MAX_LINE, drain_once, drain_run, main, parse_json, private_input, read_events
 
 
 class GenericCliTests(unittest.TestCase):
@@ -18,6 +18,23 @@ class GenericCliTests(unittest.TestCase):
                 read_events(io.BytesIO(value))
         with self.assertRaises(ValueError):
             read_events(io.StringIO('{}\n' * 101))
+
+    def test_deep_json_is_a_redacted_input_error(self):
+        with self.assertRaises(ValueError):
+            parse_json('[' * 20000 + '0' + ']' * 20000)
+
+    def test_json_depth_limit_counts_containers_not_quoted_text(self):
+        value = parse_json('[' * MAX_JSON_DEPTH + '0' + ']' * MAX_JSON_DEPTH)
+        for _ in range(MAX_JSON_DEPTH):
+            value = value[0]
+        self.assertEqual(value, 0)
+        for value in ('[' * (MAX_JSON_DEPTH + 1) + '0' + ']' * (MAX_JSON_DEPTH + 1), '{"x":' * (MAX_JSON_DEPTH + 1) + '0' + '}' * (MAX_JSON_DEPTH + 1)):
+            with self.assertRaises(ValueError):
+                parse_json(value)
+        text = '[{]}\\"' * 1000
+        encoded = json.dumps({"text": text})
+        self.assertEqual(parse_json(encoded), {"text": text})
+        self.assertEqual(parse_json(encoded.encode()), {"text": text})
 
     def test_ingress_file_requires_private_regular_owned_file(self):
         with tempfile.TemporaryDirectory() as directory:

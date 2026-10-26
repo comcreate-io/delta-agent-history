@@ -20,3 +20,8 @@ docs/compatibility.md before changing protocol behavior.
 - Keep Linux/macOS paths and service formats portable. macOS unit CI does not
   establish live T3/Delta recording on a Mac.
 - Do not include real user state or assistant authorship in commits or PRs.
+- New-project enrollment uses `delta-history enroll`; preserve existing config,
+  cutoffs and instruction content. See `docs/enrollment.md`. Its managed guidance
+  must never imply upload consent for another operator. Generic and T3 scope
+  sharing requires both configs explicitly selecting the same project registry;
+  keep original state, credentials and producer identities separate.

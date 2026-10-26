@@ -177,6 +177,61 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(self.flush()["busy"])
         self.assertFalse(FakeSink.calls)
 
+    def test_sqlite_writer_contention_retries_identical_message_without_halt(self):
+        self.submit(self.event(), self.event(2, "message.completed"))
+        writer = sqlite3.connect(self.state / "ingress.sqlite3")
+        self.addCleanup(writer.close)
+        database = core._database
+        enqueue = FakeSink.enqueue
+        expected = None
+
+        def short_timeout(state):
+            db = database(state)
+            db.execute("PRAGMA busy_timeout=0")
+            return db
+
+        def contested_enqueue(sink, key, item, update):
+            nonlocal expected
+            enqueue(sink, key, item, update)
+            expected = copy.deepcopy(FakeSink.stored)
+            writer.execute("BEGIN IMMEDIATE")
+
+        # Let the old permanent-error handler finish after observing contention.
+        # Recovery must not invoke it, even if the writer is still busy.
+        halt = core._halt
+        def release_before_halt(*args):
+            writer.rollback()
+            return halt(*args)
+
+        try:
+            with patch("delta_history.core._database", side_effect=short_timeout), patch.object(FakeSink, "enqueue", contested_enqueue), patch("delta_history.core._halt", side_effect=release_before_halt):
+                result = self.flush()
+        finally:
+            writer.rollback()
+        self.assertEqual(result["halted"], 0)
+        self.assertEqual(result["catching_up"], 1)
+        self.assertEqual(core.status(self.config, self.state)["halted"], 0)
+        self.assertEqual(self.flush()["delivered_sessions"], 1)
+        self.assertEqual(FakeSink.stored, expected)
+        self.assertEqual(core.status(self.config, self.state)["pending"], 0)
+
+    def test_non_lock_sqlite_error_still_requires_review(self):
+        self.submit(self.event(), self.event(2, "message.completed"))
+        FakeSink.failure = sqlite3.OperationalError("unrecognized database failure")
+        self.assertEqual(self.flush()["halted"], 1)
+
+    def test_extended_sqlite_busy_and_locked_codes_remain_retryable(self):
+        self.submit(self.event(), self.event(2, "message.completed"))
+        for code in (sqlite3.SQLITE_BUSY_SNAPSHOT, sqlite3.SQLITE_LOCKED_SHAREDCACHE):
+            with self.subTest(code=code):
+                failure = sqlite3.OperationalError("synthetic contention")
+                failure.sqlite_errorcode = code
+                FakeSink.failure = failure
+                self.assertEqual(self.flush()["catching_up"], 1)
+                self.assertEqual(core.status(self.config, self.state)["halted"], 0)
+        FakeSink.failure = None
+        self.assertEqual(self.flush()["delivered_sessions"], 1)
+
     def test_legacy_root_and_symlink_state_never_mutated(self):
         self.state.mkdir()
         old = self.state / "source.sqlite3"

@@ -70,6 +70,16 @@ Read [setup](docs/setup.md), [adapters](docs/adapters.md),
 [background services](docs/services.md), and [agent/MCP recall](docs/agents.md).
 Nix packaging and original `t3-delta` commands are included.
 
+## Add new projects
+
+After initial setup, use `delta-history enroll --project /absolute/project --check`
+to check a repository, then add `--accept-upload` in place of `--check` after
+consenting to private uploads. Enrollment preserves existing config and adds
+managed Delta instructions to both `AGENTS.md` and `CLAUDE.md`. Repeated runs keep
+existing instructions and enrollment dates. Install the portable `delta-enroll`
+skill and global instruction once to make this part of agents' new-project setup.
+See [project enrollment](docs/enrollment.md) for the workflow and service reload.
+
 ## Existing T3 users
 
 Previously named `t3-delta-recorder`. Original configuration, services, credentials,

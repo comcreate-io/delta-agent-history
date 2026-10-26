@@ -14,6 +14,7 @@ MAX_LINE = 1024 * 1024
 MAX_BATCH = 4 * 1024 * 1024
 MAX_EVENTS = 100
 MAX_OUTPUT = 2 * 1024 * 1024
+MAX_JSON_DEPTH = 64
 
 
 def _strict_object(pairs):
@@ -30,7 +31,29 @@ def _invalid_constant(value):
 
 
 def parse_json(value):
-    return json.loads(value, object_pairs_hook=_strict_object, parse_constant=_invalid_constant)
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8")
+    depth, quoted, escaped = 0, False, False
+    for character in value:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+        elif character == '"':
+            quoted = True
+        elif character in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise ValueError("JSON nesting exceeds the parser budget")
+        elif character in "]}":
+            depth -= 1
+    try:
+        return json.loads(value, object_pairs_hook=_strict_object, parse_constant=_invalid_constant)
+    except RecursionError:
+        raise ValueError("JSON nesting exceeds the parser budget") from None
 
 
 def read_events(stream):
@@ -94,11 +117,14 @@ def drain_once(config, state):
     return value
 
 
-def drain_run(config, state):
+def drain_run(config, state, config_path=None):
     """Keep draining after transient failures without logging exception values."""
     failures = 0
     while True:
         try:
+            if config_path is not None:
+                from .configuration import load
+                config = load(config_path)
             print_json(drain_once(config, state))
             failures = 0
         except Exception as error:
@@ -117,9 +143,14 @@ def parser():
     initialize.add_argument("--source", action="append", required=True, metavar="KIND:INSTANCE")
     initialize.add_argument("--delta-binary")
     initialize.add_argument("--delta-organization")
+    initialize.add_argument("--project-enrollment-file", type=Path, help="Explicit private project registry; may be shared with the original T3 worker")
     initialize.add_argument("--accept-upload", action="store_true")
     initialize.add_argument("--legacy-t3-config", type=Path, help="Explicit read-only link to an existing T3 recorder config")
     initialize.add_argument("--legacy-t3-state", type=Path, help="Explicit read-only link to the existing T3 recorder state")
+    enroll = commands.add_parser("enroll", help="Add a project to existing config and update its AGENTS.md/CLAUDE.md offline")
+    enroll.add_argument("--project", type=Path, required=True)
+    enroll.add_argument("--accept-upload", action="store_true")
+    enroll.add_argument("--check", action="store_true", help="Read-only enrollment check; exit 2 if not enrolled")
     ingest = commands.add_parser("ingest", help="Accept bounded JSONL into the private local queue; no upload")
     ingest.add_argument("--file", type=Path)
     commands.add_parser("once", help="Drain one delivery cycle")
@@ -169,7 +200,10 @@ def main(argv=None):
             }
             value = configuration.initialize(args.config.expanduser(), projects=args.project, sources=args.source,
                 delta_binary=args.delta_binary, accept_upload=args.accept_upload, delta_organization=args.delta_organization,
-                legacy_t3=legacy)
+                legacy_t3=legacy, project_enrollment_file=args.project_enrollment_file)
+        elif args.command == "enroll":
+            from .enrollment import enroll
+            value = enroll(args.config, args.project, accept_upload=args.accept_upload, check=args.check)
         else:
             config = configuration.load(args.config.expanduser())
             if args.command == "ingest":
@@ -182,7 +216,7 @@ def main(argv=None):
             elif args.command == "once":
                 value = drain_once(config, state)
             elif args.command == "run":
-                return drain_run(config, state)
+                return drain_run(config, state, config_path=args.config.expanduser())
             elif args.command == "status":
                 value = core.status(config, state)
             elif args.command == "sessions":
@@ -205,6 +239,8 @@ def main(argv=None):
                 from .adapters.codex import codex_run
                 return codex_run(config, state, args.instance, args.project.expanduser(), args.codex_binary, args.prompt_file.expanduser(), model=args.model)
         print_json(value)
+        if args.command == "enroll" and not value.get("enrolled"):
+            return 2
         if args.command in ("ingest", "hook") and isinstance(value, dict) and (value.get("rejected") or value.get("halted")):
             return 2
         if args.command == "once" and isinstance(value, dict) and (value.get("catching_up") or value.get("halted") or value.get("busy")):
@@ -214,5 +250,7 @@ def main(argv=None):
         return 130
     except Exception as error:
         # Exception messages may contain transcript text, local paths, or credentials.
-        print(json.dumps({"error": type(error).__name__, "message": "History request failed; check configuration and local status."}), file=sys.stderr)
+        from .enrollment import EnrollmentError
+        message = str(error) if isinstance(error, EnrollmentError) else "History request failed; check configuration and local status."
+        print(json.dumps({"error": type(error).__name__, "message": message}), file=sys.stderr)
         return 2

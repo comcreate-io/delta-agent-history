@@ -34,8 +34,11 @@ jobs:
           "$RUNNER_TEMP/recorder-smoke/bin/t3-delta-service" --help
           "$RUNNER_TEMP/recorder-smoke/bin/delta-history" --help
           "$RUNNER_TEMP/recorder-smoke/bin/delta-history-service" --help
+          "$RUNNER_TEMP/recorder-smoke/bin/delta-history" enroll --help
           test -f "$RUNNER_TEMP/recorder-smoke/share/t3-delta-recorder/skills/t3-delta-history/SKILL.md"
           test -f "$RUNNER_TEMP/recorder-smoke/share/t3-delta-recorder/instructions/project-recall.md"
           test -f "$RUNNER_TEMP/recorder-smoke/share/delta-agent-history/skills/delta-history/SKILL.md"
+          test -f "$RUNNER_TEMP/recorder-smoke/share/delta-agent-history/skills/delta-enroll/SKILL.md"
+          test -f "$RUNNER_TEMP/recorder-smoke/share/delta-agent-history/instructions/project-enrollment.md"
           test -f "$RUNNER_TEMP/recorder-smoke/share/delta-agent-history/schemas/event.schema.json"
           test -f "$RUNNER_TEMP/recorder-smoke/share/delta-agent-history/integrations/opencode-plugin.mjs"

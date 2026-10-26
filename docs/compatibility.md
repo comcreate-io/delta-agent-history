@@ -1,6 +1,6 @@
 # Compatibility and evidence
 
-This is an experimental 0.2 release. Harness independence is a protocol boundary,
+This is an experimental 0.3 release. Harness independence is a protocol boundary,
 not a promise that every application provides complete automatic capture.
 
 | Component | Support boundary |
@@ -53,6 +53,13 @@ sessions in one checkout share files. Use linked worktrees for independent work.
 Current delivery can process sessions serially; inspect pending/gap/adapter holds
 separately from process availability. Automatic credential renewal and remote MCP
 hosting are not included. Existing T3 credentials retain their 30-day renewal flow.
+
+Checkout bindings currently retain filesystem device and inode numbers. Some
+filesystem remounts can change the device number while leaving the checkout
+intact, producing a review hold. Automatic remount recovery is not implemented.
+Preserve the state and verify exact paths, Git identities and filesystem evidence
+before deliberate revalidation. Do not remove the guard or clear all holds:
+replacement checkouts and immutable-message conflicts also require review.
 
 No automatic restore is exposed. Latest-state recovery has a narrow Linux proof;
 arbitrary historical point recovery through this bridge remains unverified.

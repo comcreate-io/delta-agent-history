@@ -47,9 +47,10 @@ class AdapterTests(unittest.TestCase):
     def snapshot(self, messages):
         return io.StringIO(json.dumps({"session_id":"o1", "project":str(self.project), "messages":messages}))
 
-    def fake_codex(self, events, exit_code=0, stderr_message=None):
+    def fake_codex(self, events, exit_code=0, stderr_message=None, launch_file=None):
         executable = self.root / "codex-fake"
         executable.write_text("#!" + sys.executable + "\nimport json,sys\nassert sys.argv[1:3] == ['exec','--json']\nassert sys.argv[-1] == '-'\nassert '--dangerously-bypass-approvals-and-sandbox' not in sys.argv\nassert sys.stdin.read() == 'review this project'\n" +
+            ("with open("+repr(str(launch_file))+",'a') as launches: launches.write('run\\n')\n" if launch_file else "") +
             ("print("+repr(stderr_message)+",file=sys.stderr)\n" if stderr_message else "") +
             "\n".join("print(" + repr(json.dumps(event)) + ")" for event in events) + f"\nsys.exit({exit_code})\n")
         executable.chmod(0o700)
@@ -253,6 +254,63 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(7,codex_run(self.config,self.state,"test",self.project,binary,prompt))
         self.assertEqual("failed",self.records()[-1]["status"])
         self.assertNotIn("SECRET",json.dumps(self.records()))
+
+    def test_codex_busy_ingress_preserves_answers_and_frozen_retry_without_model(self):
+        events = [{"type":"thread.started","thread_id":"upstream"},
+            {"type":"item.completed","item":{"id":"r","type":"reasoning","text":"PRIVATE_REASONING"}},
+            {"type":"item.completed","item":{"id":"a","type":"agent_message","text":"first answer"}},
+            {"type":"item.completed","item":{"id":"t","type":"command_execution","aggregated_output":"PRIVATE_TOOL"}},
+            {"type":"item.completed","item":{"id":"b","type":"agent_message","text":"final answer"}},
+            {"type":"turn.completed"}]
+        launches = self.root / "model-launches"
+        binary,prompt = self.fake_codex(events,launch_file=launches)
+        contention = self.root / "contention.sqlite3"
+        with contextlib.closing(sqlite3.connect(contention)) as owner, contextlib.closing(sqlite3.connect(contention,timeout=0)) as contender:
+            owner.execute("CREATE TABLE held(value)")
+            owner.commit()
+            owner.execute("BEGIN IMMEDIATE")
+            calls = 0
+            def locked_submit(config,state,records):
+                nonlocal calls
+                calls += 1
+                if calls > 1:
+                    contender.execute("INSERT INTO held VALUES(1)")
+                    self.fail("The fixture writer lock was not enforced")
+                return submit(config,state,records)
+            out,err = io.StringIO(),io.StringIO()
+            with patch("delta_history.adapters.common.submit_events",side_effect=locked_submit), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(0,codex_run(self.config,self.state,"test",self.project,binary,prompt))
+        self.assertEqual("first answer\nfinal answer\n",out.getvalue())
+        self.assertNotIn("PRIVATE",out.getvalue()+err.getvalue()+json.dumps(self.records()))
+        frozen = self.records()
+        self.assertEqual(["review this project","first answer","final answer"],[e["text"] for e in frozen if e["type"] == "message.completed"])
+        self.assertEqual("completed",frozen[-1]["status"])
+        self.assertEqual({"pending":3,"halted":0},adapter_health(self.state))
+        with patch("delta_history.adapters.codex.codex_run",side_effect=AssertionError("replay must never launch a model")):
+            result = retry_pending(self.config,self.state)
+        self.assertEqual(3,result["submitted"])
+        self.assertEqual(0,result["halted"])
+        self.assertEqual(frozen,self.records())
+        self.assertEqual({"pending":0,"halted":0},adapter_health(self.state))
+        self.assertEqual("run\n",launches.read_text())
+        with contextlib.closing(sqlite3.connect(self.state / "ingress.sqlite3")) as db:
+            self.assertEqual(frozen,[json.loads(row[0]) for row in db.execute("SELECT body FROM events ORDER BY sequence")])
+
+    def test_codex_conflicting_completion_still_halts_without_changed_or_later_text(self):
+        events = [{"type":"thread.started","thread_id":"upstream"},
+            {"type":"item.completed","item":{"id":"a","type":"agent_message","text":"original answer"}},
+            {"type":"item.completed","item":{"id":"a","type":"agent_message","text":"changed answer"}},
+            {"type":"item.completed","item":{"id":"b","type":"agent_message","text":"later answer"}},
+            {"type":"turn.completed"}]
+        binary,prompt = self.fake_codex(events)
+        out,err = io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
+            self.assertEqual(0,codex_run(self.config,self.state,"test",self.project,binary,prompt))
+        self.assertEqual("original answer\n",out.getvalue())
+        self.assertNotIn("changed answer",json.dumps(self.records()))
+        self.assertNotIn("later answer",json.dumps(self.records()))
+        self.assertEqual(1,adapter_health(self.state)["halted"])
+        self.assertIn("incomplete",err.getvalue())
 
     def test_codex_partial_stream_is_not_completed(self):
         binary,prompt = self.fake_codex([{"type":"thread.started","thread_id":"upstream"},{"type":"item.started","item":{"id":"a","type":"agent_message","text":"unfinished"}}])
