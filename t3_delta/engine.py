@@ -16,6 +16,34 @@ def timestamp(value):
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 
+PROGRESS_STAGES = frozenset({
+    "retry_delivery", "delivery_complete", "source_environment",
+    "source_projects", "source_threads", "source_capture", "idle",
+})
+
+
+def project_health(health, progress, now, poll_seconds=10):
+    """Project worker liveness without refreshing completed source evidence."""
+    health = dict(health)
+    limit = max(60, 3 * poll_seconds)
+    current = timestamp(now)
+
+    def recent(value):
+        return value is not None and 0 <= current - timestamp(value) <= limit
+
+    checked = health.get("checked_at")
+    alive = (isinstance(progress, dict) and progress.get("stage") in PROGRESS_STAGES
+             and recent(progress.get("updated_at")))
+    observed = checked or (progress.get("updated_at") if isinstance(progress, dict) else None)
+    if observed and not recent(checked) and not alive:
+        health["phase"] = "stale"
+    elif alive and health.get("phase") not in ("unavailable", "needs_review", "halted"):
+        # Progress means work is advancing, not that capture/upload is current.
+        if progress["stage"] != "idle" or not recent(checked):
+            health["phase"] = "catching_up"
+    return health
+
+
 def remote_key(value):
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Missing repository identity")
@@ -156,6 +184,13 @@ class Engine:
                     "matched_projects": int(matched[0]) if matched else 0}
             self.db.execute("INSERT OR REPLACE INTO settings VALUES('health',?)", (json.dumps(data),))
 
+    def set_progress(self, stage):
+        if stage not in PROGRESS_STAGES:
+            raise ValueError("Unknown recorder progress stage")
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO settings VALUES('progress',?)",
+                            (json.dumps({"stage": stage, "updated_at": self.clock()}),))
+
     @staticmethod
     def _transient(error):
         return any(base.__name__ in ("DeltaUnavailable", "T3Unavailable", "T3Error", "TimeoutExpired", "TimeoutError", "URLError", "ConnectionError") for base in type(error).__mro__)
@@ -167,8 +202,10 @@ class Engine:
         checks. Source holds never authorize new capture, but do not discard
         completed immutable records already queued before a hold.
         """
+        self.set_progress("retry_delivery")
         report = {"sessions": 0, "delivered_sessions": 0, "catching_up": 0, "halted": 0}
         for session in self.sink.sessions():
+            self.set_progress("retry_delivery")
             report["sessions"] += 1
             external_id = session["external_id"]
             prefix = self.config["environment_id"] + ":"
@@ -219,6 +256,7 @@ class Engine:
                 phase = "source_missing" if isinstance(error, FileNotFoundError) else "halted" if type(error).__name__ == "DeltaConflict" else None
                 self._thread_error(thread_id, type(error).__name__, self._transient(error), phase=phase)
                 report["catching_up" if self._transient(error) or phase == "source_missing" else "halted"] += 1
+        self.set_progress("delivery_complete")
         return report
 
     def _mark_attached(self, thread_id, binding):
@@ -229,6 +267,7 @@ class Engine:
             self.db.execute("UPDATE threads SET attached_at=?,phase='attached' WHERE id=? AND attached_at=''", (self.clock(), thread_id))
 
     def poll(self):
+        self.set_progress("source_environment")
         env = self.source.environment()
         if env.get("environmentId") != self.config["environment_id"]:
             raise ValueError("T3 environment identity differs from the configured environment")
@@ -236,7 +275,9 @@ class Engine:
             raise ValueError("T3 server version needs compatibility review")
         matched_projects = 0
         seen_threads = set()
+        self.set_progress("source_projects")
         for project in self.source.projects():
+            self.set_progress("source_projects")
             try:
                 directory, remote = checkout_identity(project["workspaceRoot"])
             except (OSError, ValueError, subprocess.SubprocessError):
@@ -245,7 +286,9 @@ class Engine:
             if cutoff is None:
                 continue
             matched_projects += 1
+            self.set_progress("source_threads")
             for listed in self.source.threads(project["id"]):
+                self.set_progress("source_threads")
                 if timestamp(listed["createdAt"]) < cutoff:
                     continue
                 thread_id = listed["threadId"]
@@ -254,10 +297,13 @@ class Engine:
                     self._thread_error(thread_id, "T3 history was rolled back; recording requires review")
                     continue
                 try:
+                    self.set_progress("source_capture")
                     self._capture(project, listed)
                 except Exception as error:
                     self._thread_error(thread_id, type(error).__name__, self._transient(error),
                                        phase="source_missing" if isinstance(error, FileNotFoundError) else None)
+                finally:
+                    self.set_progress("source_threads")
         known_threads = {row[0] for row in self.db.execute("SELECT id FROM threads")}
         prefix = self.config["environment_id"] + ":"
         known_threads.update(s["external_id"][len(prefix):] for s in self.sink.sessions()
@@ -265,6 +311,7 @@ class Engine:
         for thread_id in known_threads - seen_threads:
             self._thread_error(thread_id, "T3 project or thread is no longer discoverable", phase="source_missing")
         self.set_health("watching" if matched_projects else "awaiting_project", matched_projects=matched_projects)
+        self.set_progress("idle")
 
     def _thread_error(self, thread_id, error, transient=False, *, phase=None):
         phase = phase or ("catching_up" if transient else "needs_review")
@@ -375,8 +422,9 @@ class Engine:
     def status(self):
         row = self.db.execute("SELECT value FROM settings WHERE key='health'").fetchone()
         health = json.loads(row[0]) if row else {"phase": "not_started"}
-        if health.get("checked_at") and timestamp(self.clock()) - timestamp(health["checked_at"]) > max(60, 3 * self.config.get("poll_seconds", 10)):
-            health["phase"] = "stale"
+        row = self.db.execute("SELECT value FROM settings WHERE key='progress'").fetchone()
+        progress = json.loads(row[0]) if row else None
+        health = project_health(health, progress, self.clock(), self.config.get("poll_seconds", 10))
         threads = [dict(zip(("thread_id", "external_id", "directory", "attached_at", "phase", "last_error", "last_seen"), r)) for r in self.db.execute("SELECT id,external_id,directory,attached_at,phase,last_error,last_seen FROM threads")]
         for thread in threads:
             thread["attached_at"] = thread["attached_at"] or None
@@ -385,6 +433,6 @@ class Engine:
             health["phase"] = "needs_review"
         elif health.get("phase") not in ("stale", "unavailable", "awaiting_project") and problems:
             health["phase"] = "catching_up"
-        return {"health": health, "enrolled_at": self.cutoff, "scope": sorted(self.allowed), "threads": threads,
+        return {"health": health, "progress": progress, "enrolled_at": self.cutoff, "scope": sorted(self.allowed), "threads": threads,
                 "problems": problems,
                 "capture": "completed_messages_and_plans_with_observed_turn_labels", "tool_outputs": "disabled", "coverage": "file history begins after attachment; no native T3 rewind"}

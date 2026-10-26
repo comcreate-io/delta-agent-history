@@ -17,7 +17,7 @@
         in
         pkgs.python3Packages.buildPythonApplication {
           pname = "delta-agent-history";
-          version = "0.2.0";
+          version = "0.3.0";
           src = self;
           pyproject = true;
           build-system = [ pkgs.python3Packages.setuptools ];

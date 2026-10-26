@@ -85,6 +85,14 @@ large logs. Logs are not automatically rotated. A service being alive is not pro
 of ingestion, acknowledgement or cloud upload. Delta must be available and signed
 in; transient delivery failures retain queued data.
 
+The optional T3 recorder reports `progress.stage` and `progress.updated_at`
+separately from `health.checked_at`. Progress describes the latest worker stage;
+`checked_at` remains the time of the last completed source verification or
+reported failure. A long poll with recent progress reports `catching_up`, not
+fresh complete capture. If both timestamps stop advancing, status becomes
+`stale`. Review holds and unavailable-source errors remain visible while other
+sessions make progress.
+
 Stopping preserves queues and Delta attachments. It neither detaches existing
 checkouts nor deletes cloud history or rewinds files. Do not remove state to clear
 a conflict. Keep the original T3 worker on its own original state and label.

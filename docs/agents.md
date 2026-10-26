@@ -25,6 +25,13 @@ its workflow in project instructions. No special model or provider is required.
 Ensure the agent can execute `delta-history`, or use its absolute installed path.
 For custom config/state, include both global options before each subcommand.
 
+For new-project setup, install the separate `skills/delta-enroll/` skill in the
+same supported skills directory and append
+[the enrollment instruction](../instructions/project-enrollment.md) to global
+guidance. It checks/enrolls selected repositories and installs both project
+instruction files. See [enrollment](enrollment.md). The recall skill and MCP remain
+read-only; enrollment needs the local CLI and the operator's upload consent.
+
 Review and append [the recall instruction](../instructions/project-recall.md) to
 your existing global/project guidance. Preserve that file. Codex commonly uses
 `~/.codex/AGENTS.md`; Claude Code commonly uses `~/.claude/CLAUDE.md`. Other clients

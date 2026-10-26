@@ -1,10 +1,12 @@
 import copy
+import datetime as dt
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from t3_delta.engine import Engine
 from t3_delta.delta_sink import DeltaUnavailable, DeltaConflict
@@ -509,3 +511,77 @@ class EngineTests(unittest.TestCase):
                     self.fail("second writer acquired lock")
         self.assertEqual(os.stat(self.state).st_mode & 0o777, 0o700)
         self.assertEqual(os.stat(self.state / "source.sqlite3").st_mode & 0o777, 0o600)
+
+    def test_long_poll_reports_progress_without_refreshing_completed_verification(self):
+        self.engine.poll()
+        current = [dt.datetime.fromisoformat(NOW)]
+        self.engine.clock = lambda: current[0].isoformat()
+        listed = [dict(self.source.thread, threadId=key) for key in ("new", "another")]
+        self.source.threads = lambda _: listed
+        observed = []
+
+        def capture(*_):
+            current[0] += dt.timedelta(seconds=45)
+            with patch("t3_delta.cli.utc_now", return_value=self.engine.clock()):
+                for status in (self.engine.status(), read_status(self.state, self.config)):
+                    self.assertEqual(status["health"]["phase"], "catching_up")
+                    self.assertEqual(status["health"]["checked_at"], NOW)
+                    self.assertEqual(status["progress"]["stage"], "source_capture")
+                    self.assertEqual(set(status["progress"]), {"stage", "updated_at"})
+                    observed.append(status)
+
+        with patch.object(self.engine, "_capture", side_effect=capture):
+            self.engine.poll()
+        self.assertEqual(len(observed), 4)
+        status = self.engine.status()
+        self.assertEqual(status["health"]["phase"], "watching")
+        self.assertEqual(status["health"]["checked_at"], self.engine.clock())
+        self.assertEqual(status["progress"]["stage"], "idle")
+
+    def test_stopped_progress_still_becomes_stale(self):
+        current = [dt.datetime.fromisoformat(NOW) + dt.timedelta(seconds=45)]
+        self.engine.clock = lambda: current[0].isoformat()
+        self.engine.set_progress("source_capture")
+        self.assertEqual(self.engine.status()["health"]["phase"], "catching_up")
+        current[0] += dt.timedelta(seconds=61)
+        self.assertEqual(self.engine.status()["health"]["phase"], "stale")
+
+    def test_recent_progress_preserves_unavailable_and_review_evidence(self):
+        self.engine.poll()
+        self.engine.set_health("unavailable", "T3HTTPError")
+        self.engine.clock = lambda: "2026-10-23T12:02:00+00:00"
+        self.engine.set_progress("retry_delivery")
+        health = self.engine.status()["health"]
+        self.assertEqual(health["phase"], "unavailable")
+        self.assertEqual(health["error"], "T3HTTPError")
+        self.assertEqual(health["checked_at"], NOW)
+        self.engine.clock = lambda: NOW
+        self.engine.set_health("watching")
+        self.engine._thread_error("new", "Immutable message changed")
+        self.engine.clock = lambda: "2026-10-23T12:02:00+00:00"
+        self.engine.set_progress("source_capture")
+        self.assertEqual(self.engine.status()["health"]["phase"], "needs_review")
+        self.assertEqual(self.engine.status()["problems"][0]["error"], "Immutable message changed")
+
+    def test_delivery_retry_advances_progress_between_sessions(self):
+        self.engine.poll()
+        self.sink.ensure_session("env:another", str(self.repo))
+        current = [dt.datetime.fromisoformat(NOW)]
+        self.engine.clock = lambda: current[0].isoformat()
+        flush = self.sink.flush
+        stages = []
+
+        def slow_flush(external_id):
+            current[0] += dt.timedelta(seconds=45)
+            status = self.engine.status()
+            self.assertEqual(status["health"]["phase"], "catching_up")
+            self.assertEqual(status["health"]["checked_at"], NOW)
+            stages.append(status["progress"]["stage"])
+            return flush(external_id)
+
+        self.sink.flush = slow_flush
+        self.engine.retry_delivery()
+        self.assertEqual(stages, ["retry_delivery", "retry_delivery"])
+        self.assertEqual(self.engine.status()["progress"]["stage"], "delivery_complete")
+        with self.assertRaises(ValueError):
+            self.engine.set_progress("arbitrary session or private data")

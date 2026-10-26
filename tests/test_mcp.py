@@ -92,6 +92,15 @@ class McpTests(unittest.TestCase):
         self.assertEqual(results[0]["error"]["code"], -32700)
         self.assertEqual(results[-1]["error"]["code"], -32603)
 
+    def test_deep_json_parse_error_preserves_stdio_connection(self):
+        nested = '{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":' + '[' * 20000 + '0' + ']' * 20000 + '}}'
+        source = io.StringIO(nested + "\n" + json.dumps(request("ping", identifier=2)) + "\n")
+        target = io.StringIO()
+        self.assertEqual(serve({}, Path("/tmp/state"), PROJECT, source, target), 0)
+        results = [json.loads(line) for line in target.getvalue().splitlines()]
+        self.assertEqual(results[0]["error"]["code"], -32700)
+        self.assertEqual(results[1], {"jsonrpc": "2.0", "id": 2, "result": {}})
+
     def test_real_stdio_process_handshake_and_tool_request_without_accounts(self):
         script = """import pathlib
 from delta_history import mcp

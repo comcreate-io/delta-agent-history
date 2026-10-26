@@ -13,9 +13,10 @@ import time
 from urllib.parse import urlsplit
 
 from .delta_sink import DeltaSink, delivery_health, projected_message_count
-from .engine import Engine, timestamp, utc_now
+from .engine import Engine, timestamp, utc_now, project_health
 from .t3_source import T3Client
 from .setup import SetupError, initialize
+from .project_scope import with_project_registry
 
 
 def private_directory(path):
@@ -53,7 +54,7 @@ def load_config(path):
     seconds = config.get("poll_seconds", 10)
     if type(seconds) is not int or not 5 <= seconds <= 300:
         raise ValueError("Poll interval must be 5 through 300 seconds")
-    return config
+    return with_project_registry(config)
 
 
 def endpoint(config):
@@ -98,7 +99,7 @@ def issue_credential(config, state):
 
 
 def read_status(state, config):
-    result = {"health": {"phase": "not_started"}, "threads": [], "problems": [],
+    result = {"health": {"phase": "not_started"}, "progress": None, "threads": [], "problems": [],
               "scope": config["allowed_remotes"], "tool_outputs": "disabled", "historical_backfill": False,
               "projects_root": config.get("projects_root"),
               "additional_project_paths": config.get("additional_project_paths", []),
@@ -110,13 +111,13 @@ def read_status(state, config):
             settings = dict(db.execute("SELECT key,value FROM settings"))
             if settings.get("health"):
                 result["health"] = json.loads(settings["health"])
+            if settings.get("progress"):
+                result["progress"] = json.loads(settings["progress"])
             result["enrolled_at"] = settings.get("enrolled_at")
             result["matched_projects"] = int(settings.get("matched_projects", "0"))
             result["threads"] = [dict(row) for row in db.execute("SELECT id AS thread_id,external_id,directory,NULLIF(attached_at,'') AS attached_at,phase,last_error,last_seen FROM threads")]
             result["problems"] = [dict(row) for row in db.execute("SELECT * FROM problems")]
-        checked = result["health"].get("checked_at")
-        if checked and timestamp(utc_now()) - timestamp(checked) > max(60, 3 * config.get("poll_seconds", 10)):
-            result["health"]["phase"] = "stale"
+        result["health"] = project_health(result["health"], result["progress"], utc_now(), config.get("poll_seconds", 10))
         if result["health"].get("phase") not in ("stale", "unavailable") and any(p["phase"] in ("needs_review", "halted") for p in result["problems"]):
             result["health"]["phase"] = "needs_review"
         elif result["health"].get("phase") not in ("stale", "unavailable") and result["problems"]:
@@ -162,7 +163,7 @@ def history(state, config, thread_id, message_range):
     return json.loads(result.stdout)
 
 
-def run(config, state, once):
+def run(config, state, once, config_path=None):
     with writer_lock(state):
         sink = DeltaSink(state, binary=config.get("delta_binary", "zed-delta"), organization=config.get("delta_organization"))
         engine = Engine(config, state, None, sink)
@@ -170,6 +171,15 @@ def run(config, state, once):
         try:
             while True:
                 try:
+                    if config_path is not None:
+                        current = load_config(config_path)
+                        mutable = {"allowed_projects", "allowed_remotes", "additional_project_paths"}
+                        if {k:v for k,v in current.items() if k not in mutable} != {k:v for k,v in config.items() if k not in mutable}:
+                            raise ValueError("Non-project configuration changed; restart the recorder")
+                        if current != config:
+                            replacement = Engine(current, state, None, sink)
+                            engine.close()
+                            engine, config = replacement, current
                     # Delivery must continue even if T3 is offline or no longer lists a thread.
                     engine.retry_delivery()
                     engine.source = T3Client(endpoint(config), state / "token.json")
@@ -177,6 +187,7 @@ def run(config, state, once):
                     failures = 0
                 except Exception as error:
                     engine.set_health("unavailable", type(error).__name__)
+                    engine.set_progress("idle")
                     failures += 1
                     print(json.dumps({"phase": "unavailable", "error": type(error).__name__}), flush=True)
                     if once:
@@ -226,7 +237,7 @@ def main(argv=None):
         if args.command == "auth":
             value = issue_credential(config, state)
         elif args.command in ("run", "once"):
-            return run(config, state, args.command == "once")
+            return run(config, state, args.command == "once", config_path=args.config)
         elif args.command == "history":
             value = history(state, config, args.thread, args.messages)
         else:

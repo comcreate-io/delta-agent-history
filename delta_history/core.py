@@ -104,6 +104,12 @@ def _halt(db, key, error):
     db.execute("UPDATE sessions SET halted=1,error=?,phase='halted' WHERE key=?", (error, key))
 
 
+def _sqlite_busy(error):
+    code = getattr(error, "sqlite_errorcode", None)
+    return (isinstance(error, sqlite3.OperationalError) and isinstance(code, int)
+            and (code & 0xff) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
+
+
 def submit(config, state, events):
     validate(config)
     batch = validate_batch(events)
@@ -259,6 +265,11 @@ def flush(config, state, sink_factory=None):
                     db.execute("UPDATE sessions SET phase=?,error=NULL WHERE key=? AND halted=0", (phase, key))
                 report["catching_up" if phase in ("waiting_for_gap", "catching_up") else "delivered_sessions"] += 1
             except Exception as error:
+                if _sqlite_busy(error):
+                    # A concurrent local writer can also block status updates.
+                    # Preserve the session and replay the same durable event later.
+                    report["catching_up"] += 1
+                    continue
                 transient = isinstance(error, (DeltaUnavailable, TimeoutError, ConnectionError, subprocess.TimeoutExpired))
                 with db:
                     if transient:
