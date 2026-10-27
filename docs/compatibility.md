@@ -7,9 +7,9 @@ not a promise that every application provides complete automatic capture.
 |---|---|
 | Python | 3.11+, standard-library runtime and POSIX locking. |
 | Linux/macOS | Package, unit, service serialization and installed-command CI. |
-| Delta | Tested baseline 0.21.0, public recording contracts 6–7 only. |
+| Delta | Public recording contracts 6–8; contract 8 uses connection-owned worktree mounts. |
 | Generic producer | Strict ingress v1; live Linux private upload and separate-client MCP readback. |
-| Claude Code | Fixture-tested documented hooks, prompts and final Stop text; prompt IDs required. |
+| Claude Code | Fixture-tested documented hooks, prompts and final Stop text; resumable idle/SessionEnd leases; prompt IDs required. |
 | Codex | Fixture-tested wrapper for noninteractive `exec --json`; not general desktop/interactive capture. |
 | OpenCode | Fixture-tested SDK/plugin snapshots of complete visible messages. |
 | Optional T3 | Original 0.1.0 read-only MCP adapter, live Linux evidence, unchanged legacy identities. |
@@ -41,7 +41,16 @@ not establish live account or desktop integration. In particular, complete live
 Claude/Codex/OpenCode capture and actual Mac desktop upload remain unverified.
 Do not label a hook as full transcript coverage when it provides only final text.
 
-The supported Delta contract remains6–7. Newer schemas need authoritative review,
+The supported Delta contract is 6–8. Contract 8 was reviewed against the official
+[plugin protocol](https://delta.dev/docs/cli/build-a-plugin) and Delta Claude
+plugin revision `70aabf083dc985d231494d94ad45498bd9e6bc77`. Worktree creation,
+thread membership and connection-owned checkout mounting are separate operations.
+Existing thread IDs, references, producer identities and immutable records remain
+unchanged. A worker keeps mount connections across drain cycles and reconnects a
+dead mount before delivery. Scope revocation and review holds release connections.
+Closed, fully delivered generic sessions do not remount. A process holds at most
+32 live mount connections; exhaustion retains pending records for retry rather
+than creating more children. CLI contract 9 or later is refused. Newer schemas need authoritative review,
 new tests and exact-version live checks before widening support. Adapter versions
 and event requirements are described in [adapter setup](adapters.md).
 

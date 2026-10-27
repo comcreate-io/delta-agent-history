@@ -58,6 +58,7 @@ class Sink:
         self.acknowledged = set()
         self.delivered = []
         self.flush_calls = []
+        self.released = []
 
     def ensure_session(self, external_id, directory):
         self.saved_sessions.setdefault(external_id, {"external_id": external_id, "directory": directory,
@@ -76,7 +77,7 @@ class Sink:
             assert self.records[binding] == update
         self.records[binding] = update
 
-    def flush(self, external_id):
+    def flush(self, external_id, **kwargs):
         self.flush_calls.append(external_id)
         if self.saved_sessions[external_id]["halted"]:
             raise DeltaConflict("held")
@@ -88,6 +89,9 @@ class Sink:
                 self.acknowledged.add(key)
         return {"pending": 0}
 
+    def release_session(self, external_id):
+        self.released.append(external_id)
+
     def sessions(self):
         result = []
         for key, saved in self.saved_sessions.items():
@@ -98,6 +102,45 @@ class Sink:
 
 
 class EngineTests(unittest.TestCase):
+    def test_uploaded_empty_outbox_does_not_delay_live_source_discovery(self):
+        engine = self.scoped_engine()
+        engine.poll()
+        self.sink.connection_owned_mounts = True
+        self.sink.flush_calls.clear()
+        self.sink.saved_sessions["env:new"].update(
+            visibility="private", upload={"state": "uploaded"}, access={"state": "granted"})
+        self.engine.source = None
+        self.assertEqual(engine.retry_delivery()["delivered_sessions"], 1)
+        self.assertFalse(self.sink.flush_calls)
+        self.sink.saved_sessions["env:new"]["upload"]["error"] = {"code": "failed", "message": "synthetic"}
+        engine.retry_delivery()
+        self.assertEqual(self.sink.flush_calls, ["env:new"])
+        self.sink.flush_calls.clear()
+        self.sink.saved_sessions["env:new"]["upload"]["error"] = None
+        self.sink.enqueue("env:new", "pending-synthetic", {"sessionUpdate": "agent_message"})
+        engine.retry_delivery()
+        self.assertEqual(self.sink.flush_calls, ["env:new"])
+
+    def test_connection_owned_retry_revalidates_fully_bound_checkout_without_t3(self):
+        engine = self.scoped_engine()
+        engine.poll()
+        self.sink.connection_owned_mounts = True
+        self.sink.flush_calls.clear()
+        self.sink.saved_sessions["env:new"].update(
+            visibility="private", upload={"state": "uploaded"}, access={"state": "granted"})
+        other = self.repo.parent / "other"
+        subprocess.run(["git", "init", "--quiet", str(other)], check=True)
+        remote = "https://example.com/other.git"
+        subprocess.run(["git", "-C", str(other), "remote", "add", "origin", remote], check=True)
+        config = {**engine.config, "allowed_remotes": [remote], "allowed_projects": [
+            {"path": str(other), "remote": remote, "enrolled_after": NOW}]}
+        changed = Engine(config, self.state, None, self.sink, clock=lambda: NOW)
+        self.addCleanup(changed.close)
+        report = changed.retry_delivery()
+        self.assertEqual(report["halted"], 1)
+        self.assertFalse(self.sink.flush_calls)
+        self.assertIn("env:new", self.sink.released)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

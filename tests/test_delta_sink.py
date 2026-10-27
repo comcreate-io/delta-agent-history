@@ -4,10 +4,11 @@ import stat
 import sqlite3
 import subprocess
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
-from t3_delta.delta_sink import DeltaConflict, DeltaError, DeltaSink, DeltaUnavailable, delivery_health, projected_message_count
+from t3_delta.delta_sink import DeltaConflict, DeltaError, DeltaSink, DeltaUnavailable, delivery_health, projected_message_count, stop_mounts
 
 
 class FakeDelta:
@@ -18,6 +19,8 @@ class FakeDelta:
         self.behavior = "normal"
         self.contract = {"operation": "contract", "min": 1, "max": 7}
         self.visibility = "private"
+        self.has_tree = True
+        self.local_worktrees = []
         self.receipt_transform = lambda value: value
         self.error = {"code": "app_unavailable", "message": "synthetic private diagnostic", "retryable": True}
 
@@ -30,7 +33,7 @@ class FakeDelta:
                 "reference": "history#t=timeline", "checkouts": [{
                     "directory": self.directory, "state": "attached", "active": True,
                 }],
-            }]},
+            }] if self.has_tree else []},
             "producer": {"source": "t3-code", "external_id": "env:thread", "next_sequence": self.frontier},
         }
 
@@ -48,8 +51,15 @@ class FakeDelta:
             assert args[args.index("--visibility") + 1] == "private"
             assert args[args.index("--organization") + 1] == "private-upload-org"
             value = {"operation": "created", "thread_id": "thread-1"}
+        elif args[:2] == ["worktree", "create"]:
+            value = {"operation": "created", "worktree_id": "history", "reference": "history"}
+        elif args[:2] == ["worktree", "list"]:
+            value = {"operation": "listed", "worktrees": self.local_worktrees}
         elif args[:2] == ["worktree", "attach"]:
-            value = {"operation": "mounted", "reference": "history#t=timeline", "directory": self.directory}
+            self.has_tree = True
+            value = ({"operation": "attached", "reference": "history#t=timeline", "thread_id": "thread-1"}
+                     if self.contract["max"] == 8 else
+                     {"operation": "mounted", "reference": "history#t=timeline", "directory": self.directory})
         elif args[:2] == ["thread", "status"]:
             value = self.status()
         elif args[:2] == ["thread", "show"]:
@@ -96,6 +106,7 @@ class DeltaSinkTest(unittest.TestCase):
         self.sink = DeltaSink(self.root / "state", "fake-delta", timeout=0.5)
 
     def tearDown(self):
+        stop_mounts()
         self.sink.close()
         self.patch.stop()
         self.temp.cleanup()
@@ -428,7 +439,7 @@ class DeltaSinkTest(unittest.TestCase):
             self.sink.flush("env:thread")
 
     def test_unknown_contract_or_nonprivate_visibility_refused(self):
-        self.fake.contract = {"operation": "contract", "min": 8, "max": 8}
+        self.fake.contract = {"operation": "contract", "min": 9, "max": 9}
         with self.assertRaises(DeltaConflict):
             self.bind()
         self.assertFalse(any(args[2:4] == ["thread", "create"] for args, _ in self.fake.calls))
@@ -452,10 +463,137 @@ class DeltaSinkTest(unittest.TestCase):
         self.assertEqual(count, len(self.fake.calls))
 
     def test_future_contract_with_overlapping_versions_stops_before_create(self):
-        self.fake.contract = {"operation": "contract", "min": 1, "max": 8}
+        self.fake.contract = {"operation": "contract", "min": 1, "max": 9}
         with self.assertRaises(DeltaConflict):
             self.bind()
         self.assertFalse(any(args[2:4] == ["thread", "create"] for args, _ in self.fake.calls))
+
+    def mount_process(self, args, **kwargs):
+        self.mount_calls.append(args)
+        receipt = {"operation": "mounted", "reference": self.mount_reference, "directory": self.fake.directory}
+        return self.real_popen([sys.executable, "-u", "-c",
+            "import sys,time; print(sys.argv[1],flush=True); time.sleep(60)", json.dumps(receipt)], **kwargs)
+
+    def prepare_mount(self):
+        self.fake.contract = {"operation": "contract", "min": 8, "max": 8}
+        self.real_popen = subprocess.Popen
+        self.mount_calls = []
+        self.mount_reference = "history#t=timeline"
+        return patch("t3_delta.delta_sink.subprocess.Popen", side_effect=self.mount_process)
+
+    def test_v8_keeps_connection_across_sink_reopen_and_reuses_binding(self):
+        with self.prepare_mount():
+            self.bind()
+            self.message()
+            self.sink.flush("env:thread")
+            self.sink.close()
+            self.sink = DeltaSink(self.root / "state", "fake-delta", timeout=0.5)
+            self.bind()
+            self.assertEqual(len(self.mount_calls), 1)
+            self.assertEqual(self.mount_calls[0][-3:], ["history#t=timeline", str(self.checkout), "--existing-checkout"])
+            self.assertEqual(self.sink.status("env:thread")["pending"], 0)
+            self.assertEqual(sum(args[2:4] == ["thread", "create"] for args, _ in self.fake.calls), 1)
+
+    def test_v8_wrong_mount_receipt_preserves_reference_and_never_appends(self):
+        with self.prepare_mount():
+            self.mount_reference = "another#t=timeline"
+            with self.assertRaises(DeltaConflict):
+                self.bind()
+            self.assertEqual(self.sink.status("env:thread")["reference"], "history#t=timeline")
+            self.assertFalse(any(args[2:4] == ["thread", "append"] for args, _ in self.fake.calls))
+
+    def test_v8_creation_canonicalizes_only_same_worktree_membership(self):
+        self.fake.has_tree = False
+        with self.prepare_mount():
+            self.bind()
+            self.assertEqual(self.sink.status("env:thread")["reference"], "history#t=timeline")
+            self.assertTrue(any(args[2:4] == ["worktree", "create"] for args, _ in self.fake.calls))
+
+    def test_v8_recovers_created_worktree_before_saved_membership(self):
+        self.fake.has_tree = False
+        self.fake.local_worktrees = [{"reference": "history", "directories": [{"directory": str(self.checkout)}]}]
+        with self.prepare_mount():
+            self.bind()
+            self.assertFalse(any(args[2:4] == ["worktree", "create"] for args, _ in self.fake.calls))
+            self.assertEqual(self.sink.status("env:thread")["reference"], "history#t=timeline")
+
+    def test_v8_dead_mount_reconnects_without_recreating_thread(self):
+        from t3_delta.delta_sink import _MOUNTS
+        with self.prepare_mount():
+            self.bind()
+            process = next(iter(_MOUNTS.values()))
+            process.terminate()
+            process.wait(timeout=2)
+            self.sink.flush("env:thread")
+            self.assertEqual(len(self.mount_calls), 2)
+            self.assertEqual(sum(args[2:4] == ["thread", "create"] for args, _ in self.fake.calls), 1)
+
+    def test_v8_mount_launch_failure_is_retryable_with_same_binding(self):
+        with self.prepare_mount():
+            with patch("t3_delta.delta_sink.subprocess.Popen", side_effect=OSError("synthetic")):
+                with self.assertRaises(DeltaUnavailable):
+                    self.bind()
+            self.assertEqual(self.sink.status("env:thread")["reference"], "history#t=timeline")
+            self.assertFalse(self.sink.status("env:thread")["halted"])
+            self.bind()
+
+    def test_v8_flush_finishes_pending_membership_before_mounting(self):
+        with self.prepare_mount():
+            self.bind()
+            self.message()
+            self.sink.release_session("env:thread")
+            with self.sink.db:
+                self.sink.db.execute("UPDATE sessions SET attached_at=NULL,reference='history'")
+            start = len(self.fake.calls)
+            self.sink.flush("env:thread")
+            self.assertTrue(any(args[2:4] == ["worktree", "attach"] for args, _ in self.fake.calls[start:]))
+            self.assertEqual(self.sink.status("env:thread")["reference"], "history#t=timeline")
+            self.assertEqual(self.sink.status("env:thread")["pending"], 0)
+
+    def test_v8_review_release_ends_connection_without_changing_ledger(self):
+        from t3_delta.delta_sink import _MOUNTS
+        with self.prepare_mount():
+            self.bind()
+            self.message()
+            process = next(iter(_MOUNTS.values()))
+            before = tuple(self.sink.db.execute("SELECT body FROM records").fetchone())
+            self.sink.release_session("env:thread")
+            self.assertIsNotNone(process.poll())
+            self.assertEqual(tuple(self.sink.db.execute("SELECT body FROM records").fetchone()), before)
+            self.assertEqual(self.sink.status("env:thread")["pending"], 1)
+
+    def test_v8_mount_budget_retains_binding_without_spawning(self):
+        with self.prepare_mount():
+            with patch("t3_delta.delta_sink.MAX_MOUNTS", 0):
+                with self.assertRaises(DeltaUnavailable):
+                    self.bind()
+            self.assertFalse(self.mount_calls)
+            self.assertFalse(self.sink.status("env:thread")["halted"])
+            self.bind()
+
+    def test_v8_detached_active_checkout_is_valid_connection_owned_mount(self):
+        original = self.fake.status
+        def status():
+            value = original()
+            value["worktrees"]["items"][0]["checkouts"][0]["state"] = "detached"
+            return value
+        self.fake.status = status
+        with self.prepare_mount():
+            self.bind()
+            self.message()
+            self.assertEqual(self.sink.flush("env:thread")["pending"], 0)
+
+    def test_v8_inactive_status_after_ready_is_retryable_without_halting(self):
+        original = self.fake.status
+        def status():
+            value = original()
+            value["worktrees"]["items"][0]["checkouts"][0]["active"] = False
+            return value
+        self.fake.status = status
+        with self.prepare_mount():
+            with self.assertRaises(DeltaUnavailable):
+                self.bind()
+            self.assertFalse(self.sink.status("env:thread")["halted"])
 
     def test_explicit_local_only_null_visibility_can_attach_but_is_catching_up(self):
         self.fake.visibility = None

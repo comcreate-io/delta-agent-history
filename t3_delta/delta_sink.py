@@ -3,12 +3,39 @@
 Only the public Delta CLI is used. No private Delta database is inspected.
 """
 
+import atexit
 import json
 import os
 from pathlib import Path
+import selectors
 import sqlite3
 import subprocess
 import time
+
+
+# Contract 8 mounts belong to their CLI connection. Keep them for the worker
+# process, including across generic drain cycles which reopen their ledgers.
+_MOUNTS = {}
+MAX_MOUNTS = 32
+
+
+def stop_mounts(keys=None):
+    for key in list(_MOUNTS if keys is None else keys):
+        process = _MOUNTS.pop(key, None)
+        if process is None:
+            continue
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        if process.stdout:
+            process.stdout.close()
+
+
+atexit.register(stop_mounts)
 
 
 class DeltaError(RuntimeError):
@@ -96,6 +123,7 @@ def delivery_health(session):
 
 class DeltaSink:
     SOURCE = "t3-code"
+    connection_owned_mounts = True
 
     def __init__(self, state_dir: Path, binary: str = "zed-delta", timeout=30, *, organization=None, producer_name="T3 Code"):
         self.state_dir = Path(state_dir)
@@ -146,6 +174,10 @@ class DeltaSink:
     def close(self):
         self.db.close()
 
+    def release_session(self, external_id):
+        session = self._session(external_id)
+        stop_mounts([(self.binary, session["reference"], session["directory"])])
+
     def _run(self, args, *, input=None):
         try:
             return subprocess.run(
@@ -174,9 +206,119 @@ class DeltaSink:
         if not isinstance(value, dict) or value.get("operation") != "contract":
             raise DeltaConflict("Unknown Delta recording contract")
         low, high = value.get("min"), value.get("max")
-        if not _integer(low) or not _integer(high) or low > high or low > 7 or high < 6 or high > 7:
-            raise DeltaConflict("Delta recording contract is incompatible; recorder supports 6–7")
-        return min(high, 7)
+        if not _integer(low) or not _integer(high) or low > high or low > 8 or high < 6 or high > 8:
+            raise DeltaConflict("Delta recording contract is incompatible; recorder supports 6–8")
+        return min(high, 8)
+
+    def _mount(self, session):
+        key = (self.binary, session["reference"], session["directory"])
+        previous = _MOUNTS.get(key)
+        if previous is not None and previous.poll() is None:
+            return
+        if previous is not None:
+            if previous.stdout:
+                previous.stdout.close()
+            del _MOUNTS[key]
+        # Stale exited children must not consume the process-wide lease budget.
+        stop_mounts([item for item, process in _MOUNTS.items() if process.poll() is not None])
+        if len(_MOUNTS) >= MAX_MOUNTS:
+            raise DeltaUnavailable("Delta mount connection budget reached; pending records retained")
+        try:
+            process = subprocess.Popen([
+                self.binary, "--json", "worktree", "mount", session["reference"],
+                session["directory"], "--existing-checkout",
+            ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError as error:
+            raise DeltaUnavailable("Delta mount command unavailable; existing binding retained") from error
+        try:
+            deadline = time.monotonic() + self.timeout
+            output = b""
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while b"\n" not in output:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise DeltaUnavailable("Delta mount readiness timed out; existing binding retained")
+                    chunk = os.read(process.stdout.fileno(), 65536)
+                    if not chunk or len(output) + len(chunk) > 65536:
+                        raise DeltaUnavailable("Delta mount readiness missing or exceeded its budget")
+                    output += chunk
+            mounted = json.loads(output.split(b"\n", 1)[0])
+            if isinstance(mounted, dict) and "error" in mounted:
+                if _retryable_cli_error(mounted["error"]):
+                    raise DeltaUnavailable("Delta mount is temporarily unavailable; existing binding retained")
+                raise DeltaConflict("Delta mount refused; existing binding retained for review")
+            if (not isinstance(mounted, dict) or mounted.get("operation") != "mounted"
+                    or mounted.get("reference") != session["reference"]
+                    or mounted.get("directory") != session["directory"]):
+                raise DeltaConflict("Delta mount receipt differs from the persisted checkout binding")
+            if process.poll() is not None:
+                raise DeltaUnavailable("Delta mount connection ended before readiness verification")
+            _MOUNTS[key] = process
+        except BaseException:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            process.stdout.close()
+            raise
+
+    def _attach_v8(self, session, preliminary):
+        external_id = session["external_id"]
+        if not session["reference"]:
+            # A prior attach may have succeeded before its local receipt was
+            # saved. Reuse exactly one matching existing worktree when present.
+            trees = preliminary.get("worktrees", {})
+            matches = {tree["reference"] for tree in trees.get("items", [])
+                       if isinstance(tree, dict) and isinstance(tree.get("reference"), str)
+                       and any(isinstance(c, dict) and c.get("directory") == session["directory"]
+                               for c in tree.get("checkouts", []))}
+            if len(matches) > 1:
+                raise DeltaConflict("Existing checkout has ambiguous Delta worktree bindings")
+            if matches:
+                reference = matches.pop()
+            else:
+                listed = self._command(["worktree", "list"])
+                if (not isinstance(listed, dict) or listed.get("operation") != "listed"
+                        or not isinstance(listed.get("worktrees"), list)):
+                    raise DeltaError("Invalid Delta local worktree inventory")
+                local = {tree["reference"] for tree in listed["worktrees"]
+                         if isinstance(tree, dict) and isinstance(tree.get("reference"), str)
+                         and any(isinstance(c, dict) and c.get("directory") == session["directory"]
+                                 for c in tree.get("directories", []))}
+                if len(local) > 1:
+                    raise DeltaConflict("Existing checkout has ambiguous local worktree bindings")
+                if local:
+                    reference = local.pop()
+                else:
+                    created = self._command(["worktree", "create", session["directory"]])
+                    if (not isinstance(created, dict) or created.get("operation") != "created"
+                            or not isinstance(created.get("worktree_id"), str) or not created["worktree_id"]
+                            or created.get("reference") != created["worktree_id"]):
+                        raise DeltaError("Invalid Delta worktree creation receipt")
+                    reference = created["reference"]
+            # Persist before membership/mount so retries never replace the binding.
+            with self.db:
+                self.db.execute("UPDATE sessions SET reference=? WHERE external_id=?", (reference, external_id))
+            session = self._session(external_id)
+        if session["attached_at"] is None:
+            attached = self._command(["worktree", "attach", session["reference"], "--thread", session["thread_id"]])
+            def history(reference):
+                return reference.removeprefix("delta://worktree/").split("#", 1)[0]
+            if (not isinstance(attached, dict) or attached.get("operation") != "attached"
+                    or not isinstance(attached.get("reference"), str) or not attached["reference"]
+                    or history(attached["reference"]) != history(session["reference"])
+                    or attached.get("thread_id") != session["thread_id"]):
+                raise DeltaError("Invalid Delta worktree membership receipt")
+            with self.db:
+                self.db.execute("UPDATE sessions SET reference=? WHERE external_id=?", (attached["reference"], external_id))
+            session = self._session(external_id)
+        self._mount(session)
+        with self.db:
+            self.db.execute("UPDATE sessions SET attached_at=COALESCE(attached_at,?) WHERE external_id=?", (time.time(), external_id))
 
     def _session(self, external_id):
         row = self.db.execute("SELECT * FROM sessions WHERE external_id=?", (external_id,)).fetchone()
@@ -251,7 +393,7 @@ class DeltaSink:
             and ("reason" not in error or isinstance(error["reason"], str))
         )
 
-    def _checkout(self, session, value):
+    def _checkout(self, session, value, *, connection_owned=False):
         trees = value.get("worktrees")
         if not isinstance(trees, dict) or trees.get("status") != "available" or not isinstance(trees.get("items"), list):
             raise DeltaUnavailable("Delta checkout inspection unavailable")
@@ -259,10 +401,16 @@ class DeltaSink:
             if not isinstance(tree, dict) or tree.get("reference") != session["reference"]:
                 continue
             for checkout in tree.get("checkouts", []):
-                if isinstance(checkout, dict) and checkout.get("directory") == session["directory"] and checkout.get("state") == "attached" and checkout.get("active", True) is True:
+                if not isinstance(checkout, dict) or checkout.get("directory") != session["directory"]:
+                    continue
+                ready = (checkout.get("state") == "attached" and checkout.get("active", True) is True
+                         or connection_owned and checkout.get("state") == "detached" and checkout.get("active") is True)
+                if ready:
                     with self.db:
                         self.db.execute("UPDATE sessions SET checkout_status=?,checked_at=? WHERE external_id=?", (_json(checkout), time.time(), session["external_id"]))
                     return
+                if connection_owned and checkout.get("state") in ("attached", "detached", "inactive"):
+                    raise DeltaUnavailable("Delta mount is not active in thread status yet; binding retained")
         self._conflict(session["external_id"], "Delta checkout/reference no longer matches the attached directory")
 
     def ensure_session(self, external_id: str, directory: str):
@@ -279,7 +427,7 @@ class DeltaSink:
         session = self._session(external_id)
         if session["halted"]:
             raise DeltaConflict(session["error"])
-        self._contract()
+        contract = self._contract()
         if not session["organization"]:
             organization = self._upload_organization()
             with self.db:
@@ -299,7 +447,10 @@ class DeltaSink:
         preliminary = self._live_status(session)
         if preliminary["producer"]["next_sequence"] > session["next_sequence"]:
             self._conflict(external_id, "Delta producer already has history absent from this outbox")
-        if not session["reference"]:
+        if contract == 8:
+            self._attach_v8(session, preliminary)
+            session = self._session(external_id)
+        elif not session["reference"]:
             attached = self._command(["worktree", "attach", directory, "--thread", session["thread_id"]])
             if not isinstance(attached, dict) or attached.get("operation") != "mounted" or attached.get("directory") != directory or not isinstance(attached.get("reference"), str) or not attached["reference"]:
                 raise DeltaError("Invalid Delta attach receipt; no checkout tracking assumed")
@@ -307,7 +458,7 @@ class DeltaSink:
                 self.db.execute("UPDATE sessions SET reference=?,attached_at=? WHERE external_id=?", (attached["reference"], time.time(), external_id))
             session = self._session(external_id)
         live = self._live_status(session)
-        self._checkout(session, live)
+        self._checkout(session, live, connection_owned=contract == 8)
         self._remember_status(external_id, live)
         return self._metadata(self._session(external_id))
 
@@ -354,15 +505,21 @@ class DeltaSink:
         with self.db:
             self.db.execute("UPDATE sessions SET upload=?,access=?,visibility=?,checked_at=? WHERE external_id=?", (_json(live.get("upload")), _json(live.get("access")), live.get("visibility"), time.time(), external_id))
 
-    def flush(self, external_id: str):
+    def flush(self, external_id: str, *, maintain_mount=True):
         session = self._session(external_id)
         if session["halted"]:
             raise DeltaConflict(session["error"])
         if not session["thread_id"] or not session["reference"]:
             raise DeltaError("Session attachment has not completed")
-        self._contract()
+        contract = self._contract()
+        if contract == 8 and maintain_mount:
+            if session["attached_at"] is None:
+                self._attach_v8(session, self._live_status(session))
+                session = self._session(external_id)
+            else:
+                self._mount(session)
         live = self._live_status(session)
-        self._checkout(session, live)
+        self._checkout(session, live, connection_owned=contract == 8)
         self._remember_status(external_id, live)
         # Private creation/attachment can return before its asynchronous cloud
         # binding exists. Server-ack append must wait for observed granted access;

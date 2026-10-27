@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 from urllib.parse import urlsplit
+from .delta_sink import delivery_health
 
 
 def utc_now():
@@ -227,6 +228,28 @@ class Engine:
                 report["halted"] += 1
                 continue
             try:
+                if getattr(self.sink, "connection_owned_mounts", False):
+                    # Reconnecting a mount resumes file capture, even when no
+                    # T3 server is reachable. Revalidate full persisted bindings
+                    # against current scope before any such connection starts.
+                    previous = self.db.execute("SELECT directory,fingerprint FROM threads WHERE external_id=?", (external_id,)).fetchone()
+                    if not previous:
+                        raise ValueError("Sink session has no immutable source binding")
+                    directory, remote = checkout_identity(session["directory"])
+                    if remote not in self.allowed:
+                        raise ValueError("Persisted checkout is outside the repository allowlist")
+                    self.scoped_checkout(directory, remote)
+                    info = Path(directory).stat()
+                    if previous[0] != directory or previous[1] != f"{info.st_dev}:{info.st_ino}":
+                        raise ValueError("Persisted checkout binding changed")
+                    if (session.get("thread_id") and session.get("reference")
+                            and session.get("pending") == 0
+                            and delivery_health(session) is None):
+                        # No outbox work exists. Live source discovery below is
+                        # what can authorize resumed capture; old empty sessions
+                        # must not starve it behind serial remote status timeouts.
+                        report["delivered_sessions"] += 1
+                        continue
                 if not session.get("thread_id") or not session.get("reference"):
                     previous = self.db.execute("SELECT directory,fingerprint FROM threads WHERE external_id=?", (external_id,)).fetchone()
                     if not previous:
@@ -241,7 +264,12 @@ class Engine:
                     check_filenames(directory)
                     attached = self.sink.ensure_session(external_id, directory)
                     self._mark_attached(thread_id, attached)
-                delivery = self.sink.flush(external_id)
+                if getattr(self.sink, "connection_owned_mounts", False):
+                    held_source = any(row and row[0] in ("needs_review", "halted", "source_missing")
+                                      for row in (held, binding_phase))
+                    delivery = self.sink.flush(external_id, maintain_mount=not held_source)
+                else:
+                    delivery = self.sink.flush(external_id)
                 if not isinstance(delivery, dict) or not isinstance(delivery.get("pending"), int) or isinstance(delivery["pending"], bool) or delivery["pending"] < 0:
                     raise ValueError("Delta delivery status is incomplete")
                 if delivery["pending"]:
@@ -315,6 +343,11 @@ class Engine:
 
     def _thread_error(self, thread_id, error, transient=False, *, phase=None):
         phase = phase or ("catching_up" if transient else "needs_review")
+        if phase in ("needs_review", "halted", "source_missing") and hasattr(self.sink, "release_session"):
+            try:
+                self.sink.release_session(self.config["environment_id"] + ":" + thread_id)
+            except Exception:
+                pass
         previous = self.db.execute("SELECT phase FROM problems WHERE thread_id=?", (thread_id,)).fetchone()
         binding = self.db.execute("SELECT phase FROM threads WHERE id=?", (thread_id,)).fetchone()
         existing = {row[0] for row in (previous, binding) if row}
