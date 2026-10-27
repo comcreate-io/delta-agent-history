@@ -83,6 +83,21 @@ def adapter_health(state, project=None):
     return {"pending":pending, "halted":halted}
 
 
+def session_inactive(state, source, instance, session):
+    """Claude idle/exit is resumable; it is not a terminal ingress close."""
+    if source != "claude-code":
+        return False
+    path = Path(state) / "adapters.sqlite3"
+    if path.is_symlink() or Path(state).is_symlink():
+        raise AdapterError("Adapter journal must not be a symlink")
+    if not path.is_file():
+        return False
+    with contextlib.closing(sqlite3.connect(path.resolve().as_uri()+"?mode=ro",uri=True,timeout=3)) as db:
+        row = db.execute("SELECT metadata FROM adapter_sessions WHERE source=? AND instance=? AND session=?", (source,instance,session)).fetchone()
+    metadata = json.loads(row[0]) if row else {}
+    return metadata.get("inactive") is True or metadata.get("completed") is True
+
+
 def retry_pending(config, state):
     """Replay only frozen existing events. Never discover sources or run a model."""
     validate(config)

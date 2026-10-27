@@ -227,10 +227,28 @@ def flush(config, state, sink_factory=None):
             report["sessions"] += 1
             key = original["key"]
             if original["halted"]:
+                if hasattr(sink, "release_session"):
+                    try:
+                        sink.release_session(key)
+                    except Exception:
+                        pass
                 report["halted"] += 1
                 continue
             try:
                 _verify(config, original)
+                from .adapters.common import session_inactive
+                inactive = session_inactive(state, original["source"], original["source_instance"], original["session_id"])
+                new_events = db.execute("SELECT 1 FROM events WHERE session_key=? AND sequence>? LIMIT 1", (key, original["exported_sequence"])).fetchone()
+                if original["phase"] == "paused" and inactive and not new_events:
+                    if hasattr(sink, "release_session"):
+                        sink.release_session(key)
+                    report["delivered_sessions"] += 1
+                    continue
+                if original["phase"] == "closed" and original["close_sequence"] is not None and original["exported_sequence"] >= original["close_sequence"]:
+                    if hasattr(sink, "release_session"):
+                        sink.release_session(key)
+                    report["delivered_sessions"] += 1
+                    continue
                 bound = sink.ensure_session(key, original["directory"])
                 if not isinstance(bound, dict) or not bound.get("thread_id") or not bound.get("reference") or bound.get("directory") != original["directory"]:
                     raise ValueError("Delta attachment receipt is incomplete")
@@ -261,16 +279,27 @@ def flush(config, state, sink_factory=None):
                 phase = "waiting_for_gap" if gap else "catching_up" if delivery["pending"] or delivery_health(delivery) == "catching_up" else "closed" if original["close_sequence"] is not None and expected > original["close_sequence"] else "recording"
                 if delivery_health(delivery) == "needs_review":
                     raise ValueError("Delta upload requires review")
+                if inactive and phase == "recording":
+                    phase = "paused"
                 with db:
                     db.execute("UPDATE sessions SET phase=?,error=NULL WHERE key=? AND halted=0", (phase, key))
+                if phase in ("closed", "paused") and hasattr(sink, "release_session"):
+                    sink.release_session(key)
                 report["catching_up" if phase in ("waiting_for_gap", "catching_up") else "delivered_sessions"] += 1
             except Exception as error:
+                transient = isinstance(error, (DeltaUnavailable, TimeoutError, ConnectionError, subprocess.TimeoutExpired))
+                if not transient and not _sqlite_busy(error) and hasattr(sink, "release_session"):
+                    # A prior cycle's connection may outlive its sink handle.
+                    # Stop file capture when current scope/binding fails review.
+                    try:
+                        sink.release_session(key)
+                    except Exception:
+                        pass
                 if _sqlite_busy(error):
                     # A concurrent local writer can also block status updates.
                     # Preserve the session and replay the same durable event later.
                     report["catching_up"] += 1
                     continue
-                transient = isinstance(error, (DeltaUnavailable, TimeoutError, ConnectionError, subprocess.TimeoutExpired))
                 with db:
                     if transient:
                         db.execute("UPDATE sessions SET phase='catching_up',error=? WHERE key=? AND halted=0", (type(error).__name__, key))

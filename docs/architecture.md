@@ -25,7 +25,7 @@ New Delta bindings use producer `delta-agent-history` and qualified hashed sessi
 IDs. The sink waits for private cloud initialization, validates attachment and
 producer identity, and preserves immutable outbox sequences and duplicate-safe
 replay. Local acceptance is separate from sink export, acknowledgement and upload.
-A malformed/unknown upstream contract fails closed. Supported contracts remain6–7.
+A malformed/unknown upstream contract fails closed. Supported contracts are 6–8; contract 8 requires connection-owned worktree mounts.
 
 ## Recall
 

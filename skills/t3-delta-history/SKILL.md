@@ -45,7 +45,7 @@ Several T3 conversations in one checkout share its files. Independent work needs
 
 ## Recovery and maintenance boundaries
 
-The supported baseline is T3 0.1.0 and Delta 0.21.0 recording contracts 6–7. Compatibility errors require review, not automatic updates or relaxed validation.
+The supported baseline is T3 0.1.0 and Delta 0.21–0.22 recording contracts 6–8. Contract 8 requires live worktree mount connections. Compatibility errors require review, not automatic updates or relaxed validation.
 
 This helper does not implement automatic restore. Latest-state recovery has a controlled Linux proof; arbitrary earlier-point recovery through the bridge remains unverified. Never invent restore commands or claim an untested recovery succeeded. Separate recovery work must establish the exact checkout and target state, prepare a separate recovery checkout or patch, and coordinate active edits before application. Restoring files does not rewind a T3 conversation.
 

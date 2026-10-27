@@ -6,12 +6,21 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from t3_delta.cli import history, read_status, load_config, main
+from t3_delta.cli import history, read_status, load_config, main, run
 from t3_delta.delta_sink import DeltaSink
 from t3_delta.engine import Engine
 
 
 class ConfigTests(unittest.TestCase):
+    def test_nonproject_configuration_change_exits_for_supervisor_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {"environment_id": "env", "delta_binary": "old"}
+            with patch("t3_delta.cli.DeltaSink"), patch("t3_delta.cli.Engine") as engine, patch(
+                    "t3_delta.cli.load_config", return_value={**config, "delta_binary": "new"}):
+                self.assertEqual(run(config, Path(directory), False, Path(directory)/"config.json"), 3)
+                engine.return_value.poll.assert_not_called()
+                engine.return_value.close.assert_called_once()
+
     def test_remote_only_configuration_is_rejected_before_authentication(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

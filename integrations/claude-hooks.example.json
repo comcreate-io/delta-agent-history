@@ -6,7 +6,12 @@
           {
             "type": "command",
             "command": "/absolute/path/to/delta-history",
-            "args": ["hook", "claude", "--instance", "workstation"],
+            "args": [
+              "hook",
+              "claude",
+              "--instance",
+              "workstation"
+            ],
             "timeout": 5,
             "onFailure": "continue"
           }
@@ -19,7 +24,30 @@
           {
             "type": "command",
             "command": "/absolute/path/to/delta-history",
-            "args": ["hook", "claude", "--instance", "workstation"],
+            "args": [
+              "hook",
+              "claude",
+              "--instance",
+              "workstation"
+            ],
+            "timeout": 5,
+            "onFailure": "continue"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/absolute/path/to/delta-history",
+            "args": [
+              "hook",
+              "claude",
+              "--instance",
+              "workstation"
+            ],
             "timeout": 5,
             "onFailure": "continue"
           }

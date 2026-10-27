@@ -175,7 +175,11 @@ def run(config, state, once, config_path=None):
                         current = load_config(config_path)
                         mutable = {"allowed_projects", "allowed_remotes", "additional_project_paths"}
                         if {k:v for k,v in current.items() if k not in mutable} != {k:v for k,v in config.items() if k not in mutable}:
-                            raise ValueError("Non-project configuration changed; restart the recorder")
+                            # Let the service supervisor restart with the new
+                            # executable/configuration instead of retrying an
+                            # immutable startup configuration forever.
+                            print(json.dumps({"phase": "restart_required", "error": "ConfigurationChanged"}), flush=True)
+                            return 3
                         if current != config:
                             replacement = Engine(current, state, None, sink)
                             engine.close()

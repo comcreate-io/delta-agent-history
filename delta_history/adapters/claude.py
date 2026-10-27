@@ -5,14 +5,27 @@ from .common import AdapterError, Journal, read_payload, required_id, visible_te
 def claude_hook(config, state, instance, stream):
     payload = read_payload(stream)
     kind = payload.get("hook_event_name")
-    if kind not in ("UserPromptSubmit", "Stop") or payload.get("agent_id"):
+    if kind not in ("UserPromptSubmit", "Stop", "SessionEnd") or payload.get("agent_id"):
         return {"accepted":False, "ignored":True}
     session = required_id(payload.get("session_id"))
-    prompt = required_id(payload.get("prompt_id"))
-    text = visible_text(payload.get("prompt" if kind == "UserPromptSubmit" else "last_assistant_message"))
     project = payload.get("cwd")
     if not isinstance(project, str):
         raise AdapterError("Claude hook requires its explicit cwd")
+    if kind == "SessionEnd":
+        if not (state / "adapters.sqlite3").is_file():
+            return {"accepted": False, "ignored": True}
+        with Journal(config, state, "claude-code", instance, session, project, existing=True) as journal:
+            if not journal.has("session:open"):
+                return {"accepted": False, "ignored": True}
+            with journal.transaction():
+                metadata = journal.metadata()
+                if payload.get("prompt_id") and payload["prompt_id"] != metadata.get("active_prompt"):
+                    return {"accepted": False, "ignored": True}
+                metadata["inactive"] = True
+                journal.set_metadata(metadata)
+            return journal.flush()
+    prompt = required_id(payload.get("prompt_id"))
+    text = visible_text(payload.get("prompt" if kind == "UserPromptSubmit" else "last_assistant_message"))
     with Journal(config, state, "claude-code", instance, session, project) as journal:
         try:
             with journal.transaction():
@@ -26,6 +39,7 @@ def claude_hook(config, state, instance, stream):
                 if not duplicate:
                     metadata["active_prompt"] = prompt
                     metadata["completed"] = kind == "Stop"
+                    metadata["inactive"] = False
                     journal.set_metadata(metadata)
         except AdapterError:
             journal.halt()

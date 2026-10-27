@@ -2,6 +2,7 @@ import contextlib
 import copy
 import fcntl
 import json
+import io
 import os
 from pathlib import Path
 import sqlite3
@@ -96,6 +97,49 @@ class CoreTests(unittest.TestCase):
         self.assertNotEqual(core.session_key("a", "b", "c:d"), core.session_key("a", "b:c", "d"))
         self.assertEqual(core.status(self.config, self.state)["health"]["phase"], "catching_up")
 
+    def test_revoked_source_and_existing_hold_release_prior_mount(self):
+        self.submit(self.event(), self.event(2, "message.completed"))
+        self.assertEqual(self.flush()["delivered_sessions"], 1)
+        key = core.sessions(self.config, self.state, self.repo)[0]["session_key"]
+        self.config["sources"] = [{"kind": "codex", "instance": "desktop"}]
+        with patch.object(FakeSink, "release_session", create=True) as release:
+            self.assertEqual(self.flush()["halted"], 1)
+            release.assert_called_once_with(key)
+        with patch.object(FakeSink, "release_session", create=True) as release:
+            self.assertEqual(self.flush()["halted"], 1)
+            release.assert_called_once_with(key)
+
+    def test_claude_idle_exit_and_resume_keep_identity_and_release_leases(self):
+        from delta_history.adapters.claude import claude_hook
+        self.config["sources"].append({"kind": "claude-code", "instance": "desktop"})
+        def hook(kind, prompt=None, text=None):
+            payload = {"hook_event_name": kind, "session_id": "native-resumable", "cwd": str(self.repo)}
+            if prompt:
+                payload["prompt_id"] = prompt
+            if text:
+                payload["prompt" if kind == "UserPromptSubmit" else "last_assistant_message"] = text
+            return claude_hook(self.config, self.state, "desktop", io.StringIO(json.dumps(payload)))
+        hook("UserPromptSubmit", "p1", "first prompt")
+        hook("Stop", "p1", "first answer")
+        with patch.object(FakeSink, "release_session", create=True) as release:
+            self.assertEqual(self.flush()["delivered_sessions"], 1)
+            release.assert_called_once()
+        key = core.sessions(self.config, self.state, self.repo)[0]["session_key"]
+        FakeSink.calls.clear()
+        self.assertEqual(self.flush()["delivered_sessions"], 1)
+        self.assertFalse(FakeSink.calls)
+        hook("SessionEnd")
+        hook("UserPromptSubmit", "p2", "resumed prompt")
+        self.assertEqual(self.flush()["delivered_sessions"], 1)
+        self.assertTrue(FakeSink.calls)
+        hook("Stop", "p2", "resumed answer")
+        hook("SessionEnd")
+        self.assertEqual(self.flush()["delivered_sessions"], 1)
+        sessions = core.sessions(self.config, self.state, self.repo)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["session_key"], key)
+        self.assertEqual(sessions[0]["phase"], "paused")
+        self.assertEqual(len(FakeSink.stored[key]), 4)
     def test_conflicting_sequence_or_event_halts_durably_and_never_delivers(self):
         a, b = self.event(), self.event(2, "message.completed")
         self.submit(a, b)
@@ -163,11 +207,15 @@ class CoreTests(unittest.TestCase):
     def test_fencing_isolated_per_session_and_retryable_retained(self):
         self.submit(self.event(), self.event(2, "message.completed"))
         FakeSink.failure = DeltaUnavailable("test")
-        self.assertEqual(self.flush()["catching_up"], 1)
+        with patch.object(FakeSink, "release_session", create=True) as release:
+            self.assertEqual(self.flush()["catching_up"], 1)
+            release.assert_not_called()
         FakeSink.failure = None
         self.assertEqual(self.flush()["delivered_sessions"], 1)
         FakeSink.failure = DeltaConflict("fenced")
-        self.assertEqual(self.flush()["halted"], 1)
+        with patch.object(FakeSink, "release_session", create=True) as release:
+            self.assertEqual(self.flush()["halted"], 1)
+            release.assert_called_once()
         self.assertEqual(core.status(self.config, self.state)["halted"], 1)
 
     def test_concurrent_worker_fails_busy_without_remote_calls(self):
