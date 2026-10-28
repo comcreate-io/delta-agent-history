@@ -21,7 +21,7 @@ delta-history run
 
 Keep `run` active in a separate terminal or install the generic per-user service. Review tracked and nonignored checkout files before enrollment. Private visibility means cloud uploads can occur. Adapters cannot enroll a new source or repository by supplying an ID or path.
 
-Generic defaults are `~/.config/delta-agent-history/config.json` and `~/.local/state/delta-agent-history/`. For custom locations, put `--config PATH --state-dir PATH` **before** the subcommand in every command and hook argument array. Keep generic and legacy T3 state separate.
+Generic defaults are `~/.config/delta-agent-history/config.json` and `~/.local/state/delta-agent-history/`. For custom locations, put `--config PATH --state-dir PATH` **before** the subcommand in every command and hook invocation. Keep generic and legacy T3 state separate.
 
 Choose a source-instance name unique to the producing installation. Two independent machines must not reuse an instance name and submit unrelated sessions under the same upstream IDs.
 
@@ -29,7 +29,9 @@ Choose a source-instance name unique to the producing installation. Two independ
 
 Merge the `hooks` entries from [claude-hooks.example.json](../integrations/claude-hooks.example.json) into your existing Claude settings. Replace the executable with the absolute installed `delta-history` path and `workstation` with the enrolled instance. Do not overwrite the rest of your settings.
 
-The example uses direct executable arguments, a five-second local timeout, and `onFailure: "continue"`; it does not interpolate prompt text into a shell command. Its `onFailure` setting requires Claude Code **2.1.295 or later**. Your version must also supply the documented common `prompt_id` field and Stop's `last_assistant_message`. Payloads without a stable prompt ID are rejected rather than assigned an invented identity. Use a current supported version and verify a synthetic conversation before relying on capture. See the [official hooks reference](https://code.claude.com/docs/en/hooks).
+The example uses a command string and a five-second local timeout. Quote an executable path containing spaces. Prompt text is passed only on stdin; it is never interpolated into the shell command. `delta-history hook claude` exits successfully on capture errors, including missing configuration, unapproved repositories, and recorder review holds. Failures emit a sanitized diagnostic on stderr; successful hooks produce no stdout, so capture receipts do not become prompt context. This behavior does not depend on an `onFailure` setting. A successful hook exit means Claude may continue, not that recording succeeded. Other commands, including `ingest` and `hook opencode`, retain their failure exit codes.
+
+Your Claude version must supply the documented common `prompt_id` field and Stop's `last_assistant_message`. Payloads without a stable prompt ID are rejected rather than assigned an invented identity. Use a current supported version and verify a synthetic conversation before relying on capture. See the [official hooks reference](https://code.claude.com/docs/en/hooks).
 
 Coverage is submitted prompt text and the final assistant text supplied by `Stop`, for the main agent only. Prompts can originate from Claude's own scheduled or background mechanisms as well as typed user input; the hook captures what that supported event supplies. Intermediate assistant messages, tools, reasoning, attachments, subagents, interrupted responses, and API-error text are not captured. `StopFailure` is deliberately ignored.
 

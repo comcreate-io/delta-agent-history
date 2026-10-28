@@ -104,6 +104,27 @@ class GenericCliTests(unittest.TestCase):
                         self.assertEqual(main(["once"]), 2)
                     self.assertEqual(json.loads(output.getvalue())[key], 1)
 
+    def test_claude_reported_rejections_are_nonblocking_and_not_prompt_context(self):
+        with patch("delta_history.configuration.load", return_value={}):
+            for key in ("rejected", "halted"):
+                with self.subTest(key=key), patch("delta_history.adapters.claude.claude_hook", return_value={key: 1}):
+                    with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as error:
+                        self.assertEqual(main(["hook", "claude", "--instance", "test"]), 0)
+                    self.assertEqual(output.getvalue(), "")
+                    self.assertEqual(json.loads(error.getvalue())["error"], "CaptureRejected")
+
+    def test_opencode_hook_keeps_strict_failure_exit_codes(self):
+        with patch("delta_history.configuration.load", return_value={}):
+            with patch("delta_history.adapters.opencode.opencode_hook", return_value={"rejected": 1}):
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(main(["hook", "opencode", "--instance", "test"]), 2)
+                self.assertEqual(json.loads(output.getvalue()), {"rejected": 1})
+            with patch("delta_history.adapters.opencode.opencode_hook", side_effect=ValueError("private-value")):
+                with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as error:
+                    self.assertEqual(main(["hook", "opencode", "--instance", "test"]), 2)
+                self.assertEqual(output.getvalue(), "")
+                self.assertNotIn("private-value", error.getvalue())
+
     def test_run_retries_transient_failures_with_backoff_and_redacted_output(self):
         with patch("delta_history.cli.drain_once", side_effect=[RuntimeError("secret-output"), {"catching_up": 0}]) as flush:
             with patch("delta_history.cli.time.sleep", side_effect=[None, KeyboardInterrupt]) as sleep:

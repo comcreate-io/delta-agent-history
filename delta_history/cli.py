@@ -15,6 +15,7 @@ MAX_BATCH = 4 * 1024 * 1024
 MAX_EVENTS = 100
 MAX_OUTPUT = 2 * 1024 * 1024
 MAX_JSON_DEPTH = 64
+CLAUDE_CAPTURE_FAILURE = "History capture failed; continuing without blocking Claude. Check configuration and local status."
 
 
 def _strict_object(pairs):
@@ -185,6 +186,7 @@ def main(argv=None):
         from t3_delta.cli import main as legacy_main
         return legacy_main(arguments[1:])
     args = parser().parse_args(arguments)
+    claude_capture = args.command == "hook" and args.kind == "claude"
     try:
         if args.command == "t3":
             from t3_delta.cli import main as legacy_main
@@ -238,6 +240,14 @@ def main(argv=None):
             elif args.command == "codex":
                 from .adapters.codex import codex_run
                 return codex_run(config, state, args.instance, args.project.expanduser(), args.codex_binary, args.prompt_file.expanduser(), model=args.model)
+        if claude_capture:
+            # Claude interprets exit 2 as a blocking decision and can add
+            # successful hook stdout to its context. Capture is best effort;
+            # keep receipts out of the conversation and report failures only
+            # through sanitized stderr without clearing recorder review holds.
+            if isinstance(value, dict) and (value.get("rejected") or value.get("halted")):
+                print(json.dumps({"error": "CaptureRejected", "message": CLAUDE_CAPTURE_FAILURE}), file=sys.stderr)
+            return 0
         print_json(value)
         if args.command == "enroll" and not value.get("enrolled"):
             return 2
@@ -251,6 +261,8 @@ def main(argv=None):
     except Exception as error:
         # Exception messages may contain transcript text, local paths, or credentials.
         from .enrollment import EnrollmentError
-        message = str(error) if isinstance(error, EnrollmentError) else "History request failed; check configuration and local status."
+        message = (CLAUDE_CAPTURE_FAILURE if claude_capture else
+                   str(error) if isinstance(error, EnrollmentError) else
+                   "History request failed; check configuration and local status.")
         print(json.dumps({"error": type(error).__name__, "message": message}), file=sys.stderr)
-        return 2
+        return 0 if claude_capture else 2
