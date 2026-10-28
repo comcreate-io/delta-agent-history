@@ -5,15 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/delta-history",
-            "args": [
-              "hook",
-              "claude",
-              "--instance",
-              "workstation"
-            ],
-            "timeout": 5,
-            "onFailure": "continue"
+            "command": "/absolute/path/to/delta-history hook claude --instance workstation",
+            "timeout": 5
           }
         ]
       }
@@ -23,15 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/delta-history",
-            "args": [
-              "hook",
-              "claude",
-              "--instance",
-              "workstation"
-            ],
-            "timeout": 5,
-            "onFailure": "continue"
+            "command": "/absolute/path/to/delta-history hook claude --instance workstation",
+            "timeout": 5
           }
         ]
       }
@@ -41,15 +27,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/delta-history",
-            "args": [
-              "hook",
-              "claude",
-              "--instance",
-              "workstation"
-            ],
-            "timeout": 5,
-            "onFailure": "continue"
+            "command": "/absolute/path/to/delta-history hook claude --instance workstation",
+            "timeout": 5
           }
         ]
       }
